@@ -28,6 +28,10 @@ Parameters:
     Description: 네이버 개발자 센터 클라이언트 Secret
     NoEcho: true
     Default: ''
+  BaseImageUri:
+    Type: String
+    Description: Lambda 베이스 Docker 이미지 URI (ECR)
+    Default: ''
 
 Globals:
   Function:
@@ -202,6 +206,8 @@ Resources:
       DockerTag: python3.11
       DockerContext: .
       Dockerfile: src/Dockerfile
+      DockerBuildArgs:
+        BASE_IMAGE: !Ref BaseImageUri
 
   # ── SQS: 블로그 임베딩 큐 ──
   BlogEmbeddingQueue:
@@ -288,6 +294,8 @@ Resources:
       DockerTag: python3.11
       DockerContext: .
       Dockerfile: src/Dockerfile
+      DockerBuildArgs:
+        BASE_IMAGE: !Ref BaseImageUri
 
   # ── Lambda 2: 상세 크롤러 + 임베딩 (컨테이너 이미지) ──
   JobDetailCrawler:
@@ -312,6 +320,8 @@ Resources:
       DockerTag: python3.11
       DockerContext: .
       Dockerfile: src/Dockerfile
+      DockerBuildArgs:
+        BASE_IMAGE: !Ref BaseImageUri
 
 Outputs:
   JobListCollectorArn:

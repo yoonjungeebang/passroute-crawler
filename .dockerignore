@@ -11,3 +11,5 @@ template.yaml
 samconfig.toml
 CLAUDE.md
 .env
+Dockerfile.base
+terraform/

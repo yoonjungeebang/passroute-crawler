@@ -36,8 +36,8 @@ def _get_credentials():
 
 
 def call_ocr(images_b64: list[str]) -> str:
-    """이미지 목록을 Cloud Vision API 로 텍스트 추출.
-
+    """
+    이미지 목록을 Cloud Vision API 로 텍스트 추출.
     각 이미지의 OCR 결과를 줄바꿈으로 합산하여 반환한다.
     """
     credentials = _get_credentials()

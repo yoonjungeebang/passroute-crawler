@@ -1,39 +1,8 @@
-# Stage 1: ONNX 임베딩 모델 변환 및 양자화
-FROM python:3.11-slim AS embedding-builder
+# 베이스 이미지에 ONNX 모델 + 의존성이 포함되어 있다.
+# 이 Dockerfile은 소스 코드만 복사한다.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir "optimum[onnxruntime]" transformers
-
-# KR-SBERT → ONNX 변환
-RUN optimum-cli export onnx \
-    --model snunlp/KR-SBERT-V40K-klueNLI-augSTS \
-    /tmp/onnx_model/ \
-    --task feature-extraction
-
-# 동적 양자화 (~440MB → ~110MB)
-RUN python -c "\
-from onnxruntime.quantization import quantize_dynamic, QuantType; \
-quantize_dynamic('/tmp/onnx_model/model.onnx', '/tmp/kr-sbert-uint8.onnx', weight_type=QuantType.QUInt8)"
-
-# 토크나이저만 별도 저장
-RUN python -c "\
-from transformers import AutoTokenizer; \
-t = AutoTokenizer.from_pretrained('snunlp/KR-SBERT-V40K-klueNLI-augSTS'); \
-t.save_pretrained('/tmp/tokenizer/')"
-
-
-# Stage 2: Lambda 런타임
-FROM public.ecr.aws/lambda/python:3.11
-
-# 임베딩 모델 복사
-COPY --from=embedding-builder /tmp/kr-sbert-uint8.onnx /app/models/kr-sbert-uint8.onnx
-COPY --from=embedding-builder /tmp/tokenizer/ /app/models/tokenizer/
-
-# 의존성 설치
-COPY src/requirements-full.txt ${LAMBDA_TASK_ROOT}/requirements.txt
-RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt
-
-# 소스 코드 복사
 COPY src/ ${LAMBDA_TASK_ROOT}/
 
 CMD ["app.job_detail_crawler"]

@@ -246,3 +246,4 @@ $RECYCLE.BIN/
 docs/
 CLAUDE.md
 .aws-sam/
+.claude
