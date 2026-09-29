@@ -1,6 +1,6 @@
 # passroute-crawler Lambda 베이스 이미지
 # ONNX 임베딩 모델(KR-SBERT) + 런타임 의존성을 포함한다.
-# 모델이나 requirements-full.txt가 변경될 때만 재빌드한다.
+# 모델이나 requirements.txt가 변경될 때만 재빌드한다.
 
 # Stage 1: ONNX 임베딩 모델 변환 및 양자화
 FROM python:3.11-slim AS embedding-builder
@@ -33,5 +33,5 @@ COPY --from=embedding-builder /tmp/kr-sbert-uint8.onnx /app/models/kr-sbert-uint
 COPY --from=embedding-builder /tmp/tokenizer/ /app/models/tokenizer/
 
 # 런타임 의존성 설치
-COPY src/requirements-full.txt ${LAMBDA_TASK_ROOT}/requirements.txt
+COPY src/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
 RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt

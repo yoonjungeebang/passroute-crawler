@@ -1,8 +1,0 @@
-requests
-beautifulsoup4
-feedparser
-trafilatura
-onnxruntime
-transformers
-numpy<2
-google-auth

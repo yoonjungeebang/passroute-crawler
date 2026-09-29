@@ -1,4 +1,4 @@
-"""S3 폴링 → ChromaDB 저장 consumer. EC2 에서 Docker 컨테이너로 실행."""
+"""S3 폴링 → PostgreSQL(pgvector) 저장 consumer. EC2 에서 Docker 컨테이너로 실행."""
 import json
 import logging
 import os
@@ -9,7 +9,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from crawler.base import JobDetail
-from storage.chromadb import ChromaDBStorage
+from storage.pgvector import PgVectorStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,19 +20,16 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 
 
-def _build_storage() -> ChromaDBStorage:
-    return ChromaDBStorage(
-        host=os.environ.get("CHROMADB_HOST", "chromadb"),
-        port=int(os.environ.get("CHROMADB_PORT", "8000")),
-    )
+def _build_storage() -> PgVectorStorage:
+    return PgVectorStorage(dsn=os.environ["DATABASE_URL"])
 
 
 def _build_s3():
     return boto3.client("s3")
 
 
-def process_parsed_files(s3, bucket: str, storage: ChromaDBStorage) -> int:
-    """parsed/ 하위 JSON 을 읽어 ChromaDB 에 저장하고 S3 객체를 삭제한다."""
+def process_parsed_files(s3, bucket: str, storage: PgVectorStorage) -> int:
+    """parsed/ 하위 JSON 을 읽어 PostgreSQL 에 저장하고 S3 객체를 삭제한다."""
     saved = 0
     paginator = s3.get_paginator("list_objects_v2")
 
@@ -69,7 +66,7 @@ def process_parsed_files(s3, bucket: str, storage: ChromaDBStorage) -> int:
     return saved
 
 
-def process_delete_requests(s3, bucket: str, storage: ChromaDBStorage) -> int:
+def process_delete_requests(s3, bucket: str, storage: PgVectorStorage) -> int:
     """delete-requests/ 하위 JSON 을 읽어 마감 공고를 삭제하고 S3 객체를 삭제한다."""
     deleted = 0
     paginator = s3.get_paginator("list_objects_v2")
@@ -97,8 +94,8 @@ def process_delete_requests(s3, bucket: str, storage: ChromaDBStorage) -> int:
     return deleted
 
 
-def update_url_index(s3, bucket: str, storage: ChromaDBStorage) -> int:
-    """ChromaDB 의 전체 URL 목록을 url-index.json 으로 갱신한다."""
+def update_url_index(s3, bucket: str, storage: PgVectorStorage) -> int:
+    """PostgreSQL 의 전체 URL 목록을 url-index.json 으로 갱신한다."""
     urls = storage.get_all_urls()
     body = json.dumps({"urls": sorted(urls)}, ensure_ascii=False)
     s3.put_object(Bucket=bucket, Key="url-index.json", Body=body.encode("utf-8"))
@@ -106,7 +103,7 @@ def update_url_index(s3, bucket: str, storage: ChromaDBStorage) -> int:
     return len(urls)
 
 
-def run_cycle(s3, bucket: str, storage: ChromaDBStorage) -> None:
+def run_cycle(s3, bucket: str, storage: PgVectorStorage) -> None:
     """한 번의 폴링 사이클을 실행한다."""
     deleted = process_delete_requests(s3, bucket, storage)
     saved = process_parsed_files(s3, bucket, storage)
@@ -122,7 +119,6 @@ def main():
     s3 = _build_s3()
 
     logger.info("consumer 시작: bucket=%s, poll_interval=%ds", bucket, POLL_INTERVAL)
-    storage.migrate_deadline_to_ts()
 
     while True:
         try:

@@ -1,4 +1,4 @@
-"""S3 중간 저장소. Lambda 가 크롤링 결과를 S3 에 저장하면 EC2 consumer 가 ChromaDB 로 옮긴다."""
+"""S3 중간 저장소. Lambda 가 크롤링 결과를 S3 에 저장하면 EC2 consumer 가 PostgreSQL 로 옮긴다."""
 import json
 import logging
 from datetime import datetime, timedelta, timezone

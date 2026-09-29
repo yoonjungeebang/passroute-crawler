@@ -1,10 +1,14 @@
 services:
-  chromadb:
-    image: chromadb/chroma:latest
+  postgres:
+    image: pgvector/pgvector:pg16
     ports:
-      - "8000:8000"
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-passroute}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-passroute}
+      - POSTGRES_DB=${POSTGRES_DB:-passroute}
     volumes:
-      - chroma-data:/chroma/chroma
+      - pg-data:/var/lib/postgresql/data
 
   consumer:
     build:
@@ -13,12 +17,11 @@ services:
     environment:
       - S3_BUCKET=${S3_BUCKET:-passroute-crawler-data}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
-      - CHROMADB_HOST=chromadb
-      - CHROMADB_PORT=8000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-passroute}:${POSTGRES_PASSWORD:-passroute}@postgres:5432/${POSTGRES_DB:-passroute}
       - POLL_INTERVAL=${POLL_INTERVAL:-60}
     depends_on:
-      - chromadb
+      - postgres
     restart: unless-stopped
 
 volumes:
-  chroma-data:
+  pg-data:

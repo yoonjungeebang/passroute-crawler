@@ -1,8 +1,8 @@
 """passroute-crawler Lambda 핸들러.
 
-EventBridge cron → [job_list_collector] → SQS → [job_detail_crawler] → S3 → EC2 consumer → ChromaDB
-EventBridge cron → [news_collector] → S3 → EC2 consumer → ChromaDB
-EventBridge cron → [blog_collector] → SQS → [blog_embedding] → S3 → EC2 consumer → ChromaDB
+EventBridge cron → [job_list_collector] → SQS → [job_detail_crawler] → S3 → EC2 consumer → PostgreSQL(pgvector)
+EventBridge cron → [news_collector] → S3 → EC2 consumer → PostgreSQL(pgvector)
+EventBridge cron → [blog_collector] → SQS → [blog_embedding] → S3 → EC2 consumer → PostgreSQL(pgvector)
 """
 import json
 import logging

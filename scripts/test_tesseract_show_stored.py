@@ -94,7 +94,7 @@ def main() -> int:
         print(json.dumps(stored_data, ensure_ascii=False, indent=2))
 
         print(f"\n{'='*60}")
-        print("ChromaDB에 저장되는 document (임베딩 대상 텍스트)")
+        print("PostgreSQL에 저장되는 document (임베딩 대상 텍스트)")
         print(f"{'='*60}")
         tech_section = "\n\n[기술스택]\n" + ", ".join(detail.tech_stack) if detail.tech_stack else ""
         document = cleaned + tech_section
