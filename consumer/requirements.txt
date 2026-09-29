@@ -1,2 +1,2 @@
-chromadb-client
+psycopg2-binary
 boto3

@@ -1,6 +1,6 @@
 """로컬 스모크 테스트 — 잡코리아 크롤링 단독 실행.
 
-ChromaDB / SQS / Lambda 없이 ``JobKoreaCrawler`` 만 직접 호출하여
+PostgreSQL / SQS / Lambda 없이 ``JobKoreaCrawler`` 만 직접 호출하여
 목록 1페이지 + 첫 공고 상세를 사람 눈으로 확인한다.
 
 사용 예:

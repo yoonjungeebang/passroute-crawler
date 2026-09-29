@@ -1,4 +1,4 @@
-"""consumer.py 단위 테스트. S3 와 ChromaDBStorage 는 mock 으로 대체한다."""
+"""consumer.py 단위 테스트. S3 와 PgVectorStorage 는 mock 으로 대체한다."""
 import json
 from unittest.mock import MagicMock, call
 
@@ -133,7 +133,7 @@ def test_process_delete_requests_legacy_now_iso():
 
 
 def test_update_url_index_writes_sorted_urls():
-    """ChromaDB 의 URL 목록을 정렬하여 url-index.json 에 기록한다."""
+    """PostgreSQL 의 URL 목록을 정렬하여 url-index.json 에 기록한다."""
     mock_s3 = MagicMock()
     mock_storage = MagicMock()
     mock_storage.get_all_urls.return_value = {"https://b.com", "https://a.com"}
