@@ -1,27 +1,19 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-passroute}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-passroute}
       - POSTGRES_DB=${POSTGRES_DB:-passroute}
     volumes:
       - pg-data:/var/lib/postgresql/data
-
-  consumer:
-    build:
-      context: .
-      dockerfile: consumer/Dockerfile
-    environment:
-      - S3_BUCKET=${S3_BUCKET:-passroute-crawler-data}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-passroute}:${POSTGRES_PASSWORD:-passroute}@postgres:5432/${POSTGRES_DB:-passroute}
-      - POLL_INTERVAL=${POLL_INTERVAL:-60}
-    depends_on:
-      - postgres
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-passroute}"]
+      interval: 10s
+      retries: 5
 
 volumes:
   pg-data:
