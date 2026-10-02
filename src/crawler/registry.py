@@ -2,10 +2,16 @@
 from typing import Iterator
 
 from crawler.base import JobCrawler
-from crawler.jobkorea import JobKoreaCrawler
+from crawler.jumpit import JumpitCrawler
+from crawler.programmers import ProgrammersCrawler
+from crawler.rallit import RallitCrawler
+from crawler.superookie import SuperookieCrawler
 
 CRAWLER_CLASSES: list[type[JobCrawler]] = [
-    JobKoreaCrawler,
+    JumpitCrawler,
+    ProgrammersCrawler,
+    RallitCrawler,
+    SuperookieCrawler,
 ]
 
 _CRAWLER_BY_SOURCE: dict[str, type[JobCrawler]] = {

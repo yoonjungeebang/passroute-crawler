@@ -6,6 +6,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,29 +39,34 @@ class JobDetail:
     career_level: str = ""
 
 
-@dataclass(frozen=True)
-class ImageJobDetail:
-    """이미지 JD. OCR 처리 후 JobDetail 로 변환 필요."""
-    source: str
-    external_id: str
-    url: str
-    company_name: str
-    title: str
-    images_b64: tuple[str, ...]
-    tech_stack: tuple[str, ...]
-    deadline: str
-    crawled_at: str
-    career_level: str = ""
-
-
 DEFAULT_DELAY_MIN = 1.0
 DEFAULT_DELAY_MAX = 2.5
 DEFAULT_MAX_PAGES = 500
 DEFAULT_STALE_PAGE_THRESHOLD = 2
 
 
+def make_crawler_session(*, extra_headers: dict | None = None) -> requests.Session:
+    """표준 크롤러 세션 생성: 재시도 정책 + 공통 헤더."""
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    session.headers.update({
+        "Accept": "application/json",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "User-Agent": (
+            "passroute-bot/1.0 "
+            "(+https://github.com/yoonjungeebang/passroute-crawler; yezanee@gmail.com)"
+        ),
+    })
+    if extra_headers:
+        session.headers.update(extra_headers)
+    return session
+
+
 class JobCrawler(ABC):
     source: ClassVar[str]
+    base_url: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -78,7 +87,7 @@ class JobCrawler(ABC):
     def fetch_listings_page(self, page: int) -> list[JobListingRef]: ...
 
     @abstractmethod
-    def fetch_detail(self, ref: JobListingRef) -> JobDetail | ImageJobDetail | None: ...
+    def fetch_detail(self, ref: JobListingRef) -> JobDetail | None: ...
 
     def collect_listings(self) -> list[JobListingRef]:
         """전체 목록 페이지를 순회해 공고를 모은다. stale 감지로 조기 종료."""
