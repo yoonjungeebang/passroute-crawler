@@ -17,9 +17,9 @@ from collector.naver_news import (
     _is_relevant,
     _make_external_id,
     _parse_pub_date,
-    _strip_html,
     news_item_to_detail_dict,
 )
+from parser.common import strip_html
 
 KST = timezone(timedelta(hours=9))
 
@@ -29,16 +29,16 @@ KST = timezone(timedelta(hours=9))
 
 class TestStripHtml:
     def test_removes_bold_tags(self):
-        assert _strip_html("<b>카카오</b> AI 신사업") == "카카오 AI 신사업"
+        assert strip_html("<b>카카오</b> AI 신사업") == "카카오 AI 신사업"
 
     def test_unescapes_html_entities(self):
-        assert _strip_html("A&amp;B &quot;test&quot;") == 'A&B "test"'
+        assert strip_html("A&amp;B &quot;test&quot;") == 'A&B "test"'
 
     def test_empty_string(self):
-        assert _strip_html("") == ""
+        assert strip_html("") == ""
 
     def test_no_tags(self):
-        assert _strip_html("순수 텍스트") == "순수 텍스트"
+        assert strip_html("순수 텍스트") == "순수 텍스트"
 
 
 # ── _parse_pub_date ──
@@ -68,7 +68,7 @@ class TestMakeExternalId:
         assert _make_external_id("https://a.com") != _make_external_id("https://b.com")
 
     def test_length(self):
-        assert len(_make_external_id("https://example.com")) == 12
+        assert len(_make_external_id("https://example.com")) == 16
 
 
 # ── _is_noise ──
@@ -172,103 +172,87 @@ class TestNaverNewsCollector:
         defaults.update(kwargs)
         return NaverNewsCollector(**defaults)
 
-    @patch("collector.naver_news.requests.get")
-    def test_collect_all_basic(self, mock_get):
+    def test_collect_all_basic(self):
         mock_resp = MagicMock()
         mock_resp.json.return_value = _make_api_response([
             _make_raw_item("<b>카카오</b> AI 신기술", "https://news.com/1"),
             _make_raw_item("카카오 클라우드 확장", "https://news.com/2"),
         ])
         mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
 
         collector = self._make_collector()
+        collector.session.get = MagicMock(return_value=mock_resp)
         items = collector.collect_all()
 
         assert len(items) == 2
         assert items[0].title == "카카오 AI 신기술"  # HTML 태그 제거됨
         assert items[0].company_name == "카카오"
 
-    @patch("collector.naver_news.requests.get")
-    def test_noise_filtered(self, mock_get):
+    def test_noise_filtered(self):
         mock_resp = MagicMock()
         mock_resp.json.return_value = _make_api_response([
             _make_raw_item("카카오 주가 급등", "https://news.com/1"),
             _make_raw_item("카카오 AI 출시", "https://news.com/2"),
         ])
         mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
 
         collector = self._make_collector()
+        collector.session.get = MagicMock(return_value=mock_resp)
         items = collector.collect_all()
 
         assert len(items) == 1
         assert items[0].title == "카카오 AI 출시"
 
-    @patch("collector.naver_news.requests.get")
-    def test_url_deduplication_across_suffixes(self, mock_get):
+    def test_url_deduplication_across_suffixes(self):
         mock_resp = MagicMock()
         mock_resp.json.return_value = _make_api_response([
             _make_raw_item("카카오 AI 기술", "https://news.com/same"),
         ])
         mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
 
         collector = self._make_collector(search_suffixes=("기술", "AI"))
+        collector.session.get = MagicMock(return_value=mock_resp)
         items = collector.collect_all()
 
         assert len(items) == 1
 
-    @patch("collector.naver_news.requests.get")
-    def test_url_deduplication_across_companies(self, mock_get):
+    def test_url_deduplication_across_companies(self):
         mock_resp = MagicMock()
         mock_resp.json.return_value = _make_api_response([
             _make_raw_item("카카오 네이버 공통 뉴스", "https://news.com/shared"),
         ])
         mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
 
         collector = self._make_collector(companies=("카카오", "네이버"))
+        collector.session.get = MagicMock(return_value=mock_resp)
         items = collector.collect_all()
 
         assert len(items) == 1
 
-    @patch("collector.naver_news.requests.get")
-    def test_api_error_continues(self, mock_get):
+    def test_api_error_continues(self):
         """API 호출 실패 시 해당 기업은 건너뛰고 계속 진행."""
-        mock_get.side_effect = Exception("API error")
-
         collector = self._make_collector()
+        collector.session.get = MagicMock(side_effect=Exception("API error"))
         items = collector.collect_all()
 
         assert items == []
 
-    @patch("collector.naver_news.requests.get")
-    def test_api_headers(self, mock_get):
-        """API 호출 시 인증 헤더가 포함되는지 검증."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = _make_api_response([])
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
-
+    def test_api_headers_in_session(self):
+        """세션에 인증 헤더가 설정되어 있는지 검증."""
         collector = self._make_collector()
-        collector.collect_all()
 
-        call_kwargs = mock_get.call_args
-        headers = call_kwargs.kwargs["headers"]
-        assert headers["X-Naver-Client-Id"] == "test_id"
-        assert headers["X-Naver-Client-Secret"] == "test_secret"
+        assert collector.session.headers["X-Naver-Client-Id"] == "test_id"
+        assert collector.session.headers["X-Naver-Client-Secret"] == "test_secret"
 
 
 # ── news_collector 핸들러 ──
 
 
 class TestNewsCollectorHandler:
+    @patch("core.secrets.get_secret", return_value={"client_id": "test_id", "client_secret": "test_secret"})
     @patch("app.NaverNewsCollector")
     @patch("app._make_storage")
-    def test_handler_saves_new_news(self, mock_storage_fn, mock_collector_cls, monkeypatch):
-        monkeypatch.setenv("NAVER_CLIENT_ID", "test_id")
-        monkeypatch.setenv("NAVER_CLIENT_SECRET", "test_secret")
+    def test_handler_saves_new_news(self, mock_storage_fn, mock_collector_cls, mock_get_secret, monkeypatch):
 
         mock_storage = MagicMock()
         mock_storage.get_all_urls.return_value = set()
@@ -299,11 +283,10 @@ class TestNewsCollectorHandler:
 
         assert json.loads(result["body"])["saved"] == 1
 
+    @patch("core.secrets.get_secret", return_value={"client_id": "test_id", "client_secret": "test_secret"})
     @patch("app.NaverNewsCollector")
     @patch("app._make_storage")
-    def test_handler_skips_existing_urls(self, mock_storage_fn, mock_collector_cls, monkeypatch):
-        monkeypatch.setenv("NAVER_CLIENT_ID", "test_id")
-        monkeypatch.setenv("NAVER_CLIENT_SECRET", "test_secret")
+    def test_handler_skips_existing_urls(self, mock_storage_fn, mock_collector_cls, mock_get_secret, monkeypatch):
 
         mock_storage = MagicMock()
         mock_storage.get_all_urls.return_value = {"https://news.com/existing"}

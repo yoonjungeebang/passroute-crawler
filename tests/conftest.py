@@ -10,11 +10,25 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
-CONSUMER_DIR = PROJECT_ROOT / "consumer"
 
-for d in (SRC_DIR, CONSUMER_DIR):
-    if str(d) not in sys.path:
-        sys.path.insert(0, str(d))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_state():
+    """secrets 캐시와 app 글로벌 상태를 테스트마다 초기화."""
+    import core.secrets as secrets_mod
+
+    import app as app_mod
+
+    secrets_mod._cache.clear()
+    secrets_mod._client = None
+    app_mod._pg_storage = None
+    yield
+    secrets_mod._cache.clear()
+    secrets_mod._client = None
+    app_mod._pg_storage = None
 
 
 @pytest.fixture(autouse=True)
@@ -22,4 +36,9 @@ def _set_required_env(monkeypatch):
     """app._required_env 가 던지지 않도록 모든 테스트에 더미 값을 주입."""
     monkeypatch.setenv("S3_BUCKET", "test-bucket")
     monkeypatch.setenv("JOB_DETAIL_QUEUE_URL", "https://sqs.test/detail")
-    monkeypatch.setenv("BLOG_EMBEDDING_QUEUE_URL", "https://sqs.test/blog-embedding")
+    monkeypatch.setenv("SOURCE_COLLECT_QUEUE_URL", "https://sqs.test/source-collect")
+    monkeypatch.setenv("DATABASE_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/database")
+    monkeypatch.setenv("NAVER_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/naver-api")
+    monkeypatch.setenv("DISCORD_WEBHOOK_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/discord")
+    monkeypatch.setenv("WORKNET_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/worknet")
+    monkeypatch.setenv("SUPEROOKIE_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/superookie")

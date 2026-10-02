@@ -14,9 +14,9 @@ from collector.tech_blog import (
     _is_truncated,
     _make_external_id,
     _parse_devocean_date,
-    _strip_html,
     blog_article_to_detail_dict,
 )
+from parser.common import strip_html
 
 KST = timezone(timedelta(hours=9))
 
@@ -28,13 +28,13 @@ KST = timezone(timedelta(hours=9))
 
 class TestStripHtml:
     def test_removes_tags(self):
-        assert _strip_html("<p>hello <b>world</b></p>") == "hello world"
+        assert strip_html("<p>hello <b>world</b></p>") == "hello world"
 
     def test_unescapes_entities(self):
-        assert _strip_html("A &amp; B &lt;C&gt;") == "A & B <C>"
+        assert strip_html("A &amp; B &lt;C&gt;") == "A & B <C>"
 
     def test_empty_string(self):
-        assert _strip_html("") == ""
+        assert strip_html("") == ""
 
 
 class TestMakeExternalId:
@@ -42,8 +42,8 @@ class TestMakeExternalId:
         url = "https://tech.kakao.com/post/123"
         assert _make_external_id(url) == _make_external_id(url)
 
-    def test_length_12(self):
-        assert len(_make_external_id("https://example.com")) == 12
+    def test_length_16(self):
+        assert len(_make_external_id("https://example.com")) == 16
 
     def test_different_urls_differ(self):
         assert _make_external_id("https://a.com") != _make_external_id("https://b.com")
@@ -338,9 +338,8 @@ _DEVOCEAN_DETAIL_NO_DEVOTEE = """
 
 
 class TestDevocean:
-    @patch("collector.tech_blog.requests.get")
     @patch("collector.tech_blog.time.sleep")
-    def test_fetch_devocean_extracts_devotee_summary(self, mock_sleep, mock_get):
+    def test_fetch_devocean_extracts_devotee_summary(self, mock_sleep):
         """데보션 목록 + 상세에서 DEVOTEE 요약을 추출한다."""
         list_resp = MagicMock()
         list_resp.text = _DEVOCEAN_LIST_HTML
@@ -350,9 +349,8 @@ class TestDevocean:
         detail_resp.text = _DEVOCEAN_DETAIL_HTML
         detail_resp.raise_for_status = MagicMock()
 
-        mock_get.side_effect = [list_resp, detail_resp, detail_resp]
-
         collector = TechBlogCollector(feeds=(), request_delay=0)
+        collector.session.get = MagicMock(side_effect=[list_resp, detail_resp, detail_resp])
         articles = collector._fetch_devocean()
 
         assert len(articles) == 2
@@ -360,9 +358,8 @@ class TestDevocean:
         assert articles[0].title == "AI 모델 서빙 가이드"
         assert "AI 모델 서빙 파이프라인" in articles[0].summary
 
-    @patch("collector.tech_blog.requests.get")
     @patch("collector.tech_blog.time.sleep")
-    def test_fetch_devocean_skips_without_devotee(self, mock_sleep, mock_get):
+    def test_fetch_devocean_skips_without_devotee(self, mock_sleep):
         """DEVOTEE 요약이 없는 글은 스킵한다."""
         list_resp = MagicMock()
         list_resp.text = _DEVOCEAN_LIST_HTML
@@ -372,20 +369,17 @@ class TestDevocean:
         no_devotee_resp.text = _DEVOCEAN_DETAIL_NO_DEVOTEE
         no_devotee_resp.raise_for_status = MagicMock()
 
-        mock_get.side_effect = [list_resp, no_devotee_resp, no_devotee_resp]
-
         collector = TechBlogCollector(feeds=(), request_delay=0)
+        collector.session.get = MagicMock(side_effect=[list_resp, no_devotee_resp, no_devotee_resp])
         articles = collector._fetch_devocean()
 
         assert len(articles) == 0
 
-    @patch("collector.tech_blog.requests.get")
     @patch("collector.tech_blog.time.sleep")
-    def test_fetch_devocean_handles_list_error(self, mock_sleep, mock_get):
+    def test_fetch_devocean_handles_list_error(self, mock_sleep):
         """목록 페이지 요청 실패 시 빈 리스트 반환."""
-        mock_get.side_effect = Exception("connection error")
-
         collector = TechBlogCollector(feeds=(), request_delay=0)
+        collector.session.get = MagicMock(side_effect=Exception("connection error"))
         articles = collector._fetch_devocean()
 
         assert articles == []
@@ -397,22 +391,16 @@ class TestDevocean:
 
 
 class TestBlogCollectorHandler:
-    @patch("app.boto3")
     @patch("app.S3Storage")
     @patch("collector.tech_blog.TechBlogCollector")
-    def test_dispatches_new_articles_to_sqs(
-        self, mock_collector_cls, mock_storage_cls, mock_boto3,
-    ):
-        """신규 블로그 글이 SQS 로 전송된다."""
+    def test_saves_new_articles_to_s3_raw(self, mock_collector_cls, mock_storage_cls):
+        """신규 블로그 글이 S3 raw/ 에 저장된다."""
         import app
 
         mock_storage = MagicMock()
         mock_storage.get_all_urls.return_value = set()
         mock_storage_cls.return_value = mock_storage
 
-        mock_sqs = MagicMock()
-        mock_boto3.client.return_value = mock_sqs
-
         mock_feed = MagicMock()
         mock_collector = MagicMock()
         mock_collector.feeds = [mock_feed]
@@ -423,29 +411,24 @@ class TestBlogCollectorHandler:
         result = app.blog_collector({}, None)
 
         body = json.loads(result["body"])
-        assert body["new"] == 1
+        assert body["saved"] == 1
         assert body["skipped"] == 0
-        mock_sqs.send_message_batch.assert_called_once()
+        mock_storage.save_raw_dict.assert_called_once()
 
-        sent_entry = mock_sqs.send_message_batch.call_args.kwargs["Entries"][0]
-        sent_data = json.loads(sent_entry["MessageBody"])
-        assert sent_data["source"] == "tech_blog"
-        assert sent_data["company_name"] == "카카오"
+        saved_data = mock_storage.save_raw_dict.call_args.args[0]
+        assert saved_data["source"] == "tech_blog"
+        assert saved_data["company_name"] == "카카오"
 
-    @patch("app.boto3")
     @patch("app.S3Storage")
     @patch("collector.tech_blog.TechBlogCollector")
-    def test_skips_existing_urls(self, mock_collector_cls, mock_storage_cls, mock_boto3):
-        """이미 저장된 URL 은 스킵하고 SQS 전송하지 않는다."""
+    def test_skips_existing_urls(self, mock_collector_cls, mock_storage_cls):
+        """이미 저장된 URL 은 스킵하고 저장하지 않는다."""
         import app
 
         mock_storage = MagicMock()
         mock_storage.get_all_urls.return_value = {"https://tech.kakao.com/post/123"}
         mock_storage_cls.return_value = mock_storage
 
-        mock_sqs = MagicMock()
-        mock_boto3.client.return_value = mock_sqs
-
         mock_feed = MagicMock()
         mock_collector = MagicMock()
         mock_collector.feeds = [mock_feed]
@@ -456,62 +439,6 @@ class TestBlogCollectorHandler:
         result = app.blog_collector({}, None)
 
         body = json.loads(result["body"])
-        assert body["new"] == 0
+        assert body["saved"] == 0
         assert body["skipped"] == 1
-        mock_sqs.send_message_batch.assert_not_called()
-
-
-# ─────────────────────────────────────────────────────────
-# blog_embedding Lambda 핸들러 테스트
-# ─────────────────────────────────────────────────────────
-
-
-def _make_blog_sqs_event(data: dict) -> dict:
-    return {"Records": [{"body": json.dumps(data)}]}
-
-
-class TestBlogEmbeddingHandler:
-    @patch("embedding.embed_text", return_value=[0.1] * 768)
-    @patch("app.S3Storage")
-    def test_embeds_and_saves_to_s3(self, mock_storage_cls, mock_embed):
-        """블로그 글 1건을 임베딩하여 S3 에 저장한다."""
-        import app
-
-        mock_storage = MagicMock()
-        mock_storage_cls.return_value = mock_storage
-
-        data = blog_article_to_detail_dict(_article())
-        event = _make_blog_sqs_event(data)
-
-        result = app.blog_embedding(event, None)
-
-        assert result["statusCode"] == 200
-        mock_storage.s3.put_object.assert_called_once()
-
-        saved_body = json.loads(
-            mock_storage.s3.put_object.call_args.kwargs["Body"].decode("utf-8"),
-        )
-        assert saved_body["embedding"] == [0.1] * 768
-        assert saved_body["source"] == "tech_blog"
-
-    @patch("embedding.embed_text", side_effect=RuntimeError("model error"))
-    @patch("app.S3Storage")
-    def test_saves_without_embedding_on_failure(self, mock_storage_cls, mock_embed):
-        """임베딩 실패 시에도 임베딩 없이 S3 에 저장한다."""
-        import app
-
-        mock_storage = MagicMock()
-        mock_storage_cls.return_value = mock_storage
-
-        data = blog_article_to_detail_dict(_article())
-        event = _make_blog_sqs_event(data)
-
-        result = app.blog_embedding(event, None)
-
-        assert result["statusCode"] == 200
-        mock_storage.s3.put_object.assert_called_once()
-
-        saved_body = json.loads(
-            mock_storage.s3.put_object.call_args.kwargs["Body"].decode("utf-8"),
-        )
-        assert "embedding" not in saved_body
+        mock_storage.save_raw_dict.assert_not_called()
