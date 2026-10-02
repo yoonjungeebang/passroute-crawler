@@ -10,8 +10,6 @@ from crawler.base import JobDetail
 
 logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = 500
-
 _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
 
 _CREATE_TABLE = """
@@ -26,7 +24,8 @@ CREATE TABLE IF NOT EXISTS job_descriptions (
     deadline    BIGINT NOT NULL DEFAULT 0,
     crawled_at  TEXT NOT NULL,
     tech_stack  TEXT NOT NULL DEFAULT '',
-    career_level TEXT NOT NULL DEFAULT ''
+    career_level TEXT NOT NULL DEFAULT '',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )
 """
 
@@ -35,12 +34,22 @@ CREATE INDEX IF NOT EXISTS idx_job_descriptions_embedding
 ON job_descriptions USING hnsw (embedding vector_cosine_ops)
 """
 
+_CREATE_INDEX_SOURCE = """
+CREATE INDEX IF NOT EXISTS idx_job_descriptions_source
+ON job_descriptions (source)
+"""
+
+_CREATE_INDEX_DEADLINE = """
+CREATE INDEX IF NOT EXISTS idx_job_descriptions_deadline
+ON job_descriptions (deadline) WHERE deadline > 0
+"""
+
 _UPSERT = """
 INSERT INTO job_descriptions
-    (url, source, external_id, company_name, title, document, embedding, deadline, crawled_at, tech_stack, career_level)
+    (url, source, external_id, company_name, title, document, embedding, deadline, crawled_at, tech_stack, career_level, updated_at)
 VALUES
     (%(url)s, %(source)s, %(external_id)s, %(company_name)s, %(title)s,
-     %(document)s, %(embedding)s, %(deadline)s, %(crawled_at)s, %(tech_stack)s, %(career_level)s)
+     %(document)s, %(embedding)s, %(deadline)s, %(crawled_at)s, %(tech_stack)s, %(career_level)s, NOW())
 ON CONFLICT (url) DO UPDATE SET
     source       = EXCLUDED.source,
     external_id  = EXCLUDED.external_id,
@@ -51,25 +60,52 @@ ON CONFLICT (url) DO UPDATE SET
     deadline     = EXCLUDED.deadline,
     crawled_at   = EXCLUDED.crawled_at,
     tech_stack   = EXCLUDED.tech_stack,
-    career_level = EXCLUDED.career_level
+    career_level = EXCLUDED.career_level,
+    updated_at   = NOW()
 """
 
 
 class PgVectorStorage:
 
     def __init__(self, dsn: str):
-        self.conn = psycopg2.connect(dsn)
-        self.conn.autocommit = True
+        self._dsn = dsn
+        self.conn = self._connect()
         self._ensure_schema()
+
+    def _connect(self):
+        """새 DB 커넥션을 생성한다."""
+        conn = psycopg2.connect(self._dsn)
+        conn.autocommit = True
+        return conn
+
+    def _ensure_alive(self) -> None:
+        """커넥션이 끊어졌으면 재연결한다. Lambda 웜 스타트 시 stale 커넥션 방지."""
+        try:
+            if self.conn.closed:
+                raise psycopg2.OperationalError("connection closed")
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            logger.warning("PostgreSQL 접속 끊김, 재접속 시도")
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = self._connect()
 
     def _ensure_schema(self) -> None:
         with self.conn.cursor() as cur:
             cur.execute(_CREATE_EXTENSION)
             cur.execute(_CREATE_TABLE)
+            cur.execute("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
             cur.execute(_CREATE_INDEX)
+            cur.execute(_CREATE_INDEX_SOURCE)
+            cur.execute(_CREATE_INDEX_DEADLINE)
 
     def save(self, detail: JobDetail, *, embedding: list[float] | None = None) -> None:
         """사전 계산된 embedding 과 document/metadata 를 PostgreSQL 에 저장."""
+        self._ensure_alive()
+
         parts: list[str] = []
         if detail.raw_text:
             parts.append(detail.raw_text)
@@ -101,6 +137,8 @@ class PgVectorStorage:
 
     def delete_expired(self, now_ts: int) -> int:
         """마감일이 지난 공고 삭제. 상시채용(deadline=0)은 제외."""
+        self._ensure_alive()
+
         with self.conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM job_descriptions WHERE deadline < %s AND deadline > 0",
@@ -114,6 +152,8 @@ class PgVectorStorage:
 
     def get_all_urls(self) -> set[str]:
         """저장된 모든 공고 URL 을 조회."""
+        self._ensure_alive()
+
         with self.conn.cursor() as cur:
             cur.execute("SELECT url FROM job_descriptions")
             return {row[0] for row in cur.fetchall()}
@@ -132,6 +172,13 @@ def _deadline_to_ts(deadline: str | int) -> int:
         return deadline
     if not deadline:
         return 0
+    # 숫자형 문자열 (크롤러가 str(int(ts)) 형태로 반환하는 경우)
+    try:
+        ts = int(deadline)
+        if ts > 0:
+            return ts
+    except ValueError:
+        pass
     try:
         dt = datetime.fromisoformat(deadline)
         if dt.tzinfo is None:

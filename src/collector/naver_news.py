@@ -1,22 +1,28 @@
 """네이버 뉴스 검색 API 연동 모듈.
 
 주요 기업의 기술/사업 동향 뉴스를 수집하여 면접 질문 생성에 활용한다.
+
+저작권 주의사항:
+- 네이버 API 가 제공하는 제목·요약(description)만 저장하며 기사 본문은 수집하지 않는다.
+- 수집한 데이터는 내부 분석(임베딩·면접 질문 생성)용이며 원문을 외부에 재게시하지 않는다.
+- DMCA takedown 요청 시 해당 데이터를 즉시 삭제할 수 있도록 delete-requests/ 경로를 사용한다.
 """
 import hashlib
-import html
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from core import KST
+from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
-
-KST = timezone(timedelta(hours=9))
 
 NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
 MAX_DISPLAY = 100
@@ -84,12 +90,6 @@ class NewsItem:
     collected_at: str
 
 
-def _strip_html(text: str) -> str:
-    """HTML 태그와 엔티티를 제거한다."""
-    cleaned = re.sub(r"<[^>]+>", "", text)
-    return html.unescape(cleaned).strip()
-
-
 def _parse_pub_date(date_str: str) -> datetime:
     """RFC 2822 형식의 pubDate 를 datetime 으로 변환."""
     try:
@@ -100,7 +100,7 @@ def _parse_pub_date(date_str: str) -> datetime:
 
 def _make_external_id(url: str) -> str:
     """URL 에서 결정적 external_id 를 생성."""
-    return hashlib.md5(url.encode()).hexdigest()[:12]
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 def _is_noise(title: str) -> bool:
@@ -144,23 +144,33 @@ class NaverNewsCollector:
         self.search_suffixes = search_suffixes or _SEARCH_SUFFIXES
         self.api_delay = api_delay
 
-    def _call_api(self, query: str, display: int = MAX_DISPLAY, start: int = 1) -> dict:
-        """네이버 뉴스 검색 API 호출."""
-        headers = {
+        self.session = requests.Session()
+        retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+        self.session.mount("http://", HTTPAdapter(max_retries=retry))
+        self.session.headers.update({
             "X-Naver-Client-Id": self.client_id,
             "X-Naver-Client-Secret": self.client_secret,
-        }
+        })
+
+    def _call_api(self, query: str, display: int = MAX_DISPLAY, start: int = 1) -> dict:
+        """네이버 뉴스 검색 API 호출."""
         params = {
             "query": query,
             "display": display,
             "start": start,
             "sort": "date",
         }
-        resp = requests.get(
-            NAVER_NEWS_API_URL, headers=headers, params=params, timeout=10,
+        resp = self.session.get(
+            NAVER_NEWS_API_URL, params=params, timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if "errorCode" in data:
+            raise RuntimeError(
+                f"네이버 API 에러: {data.get('errorCode')} - {data.get('errorMessage', '')}"
+            )
+        return data
 
     def _search_company(self, company: str) -> list[NewsItem]:
         """한 기업에 대해 검색어 접미사별로 뉴스를 수집한다."""
@@ -182,8 +192,8 @@ class NaverNewsCollector:
                     continue
                 seen_urls.add(url)
 
-                title = _strip_html(raw.get("title", ""))
-                description = _strip_html(raw.get("description", ""))
+                title = strip_html(raw.get("title", ""))
+                description = strip_html(raw.get("description", ""))
 
                 if _is_noise(title):
                     continue

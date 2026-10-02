@@ -4,7 +4,6 @@
 RSS 요약이 잘린 경우 trafilatura → BeautifulSoup 순으로 본문을 직접 추출한다.
 """
 import hashlib
-import html
 import json
 import logging
 import re
@@ -16,10 +15,13 @@ from email.utils import parsedate_to_datetime
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from core import KST
+from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
-
-KST = timezone(timedelta(hours=9))
 
 BLOG_RETENTION_DAYS = 365
 _MAX_FETCH_CONTENT = 5
@@ -69,9 +71,10 @@ _DEVOTEE_MARKER = "DEVOTEE 요약"
 
 _HTTP_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "passroute-bot/1.0 "
+        "(+https://github.com/yoonjungeebang/passroute-crawler; yezanee@gmail.com)"
     ),
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept-Encoding": "identity",
 }
 
@@ -89,12 +92,6 @@ class BlogArticle:
     url: str
     pub_date: datetime
     collected_at: str
-
-
-def _strip_html(text: str) -> str:
-    """HTML 태그와 엔티티를 제거한다."""
-    cleaned = re.sub(r"<[^>]+>", "", text)
-    return html.unescape(cleaned).strip()
 
 
 def _parse_pub_date(entry: dict) -> datetime:
@@ -122,7 +119,7 @@ def _is_truncated(text: str) -> bool:
 
 def _make_external_id(url: str) -> str:
     """URL 에서 결정적 external_id 를 생성."""
-    return hashlib.md5(url.encode()).hexdigest()[:12]
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 def _parse_devocean_date(date_str: str) -> datetime:
@@ -215,7 +212,7 @@ def _classify_job_categories(text: str) -> list[str]:
 
 
 def _deadline_from_pub_date(pub_date: datetime) -> int:
-    """pub_date + 730일을 Unix timestamp 로 변환."""
+    """pub_date + 365일을 Unix timestamp 로 변환."""
     expiry = pub_date + timedelta(days=BLOG_RETENTION_DAYS)
     return int(expiry.timestamp())
 
@@ -226,12 +223,26 @@ def _has_meaningful_content(text: str) -> bool:
     return avg_line_len > 30
 
 
+def _make_session() -> requests.Session:
+    """기술 블로그 수집용 세션 생성: 재시도 정책 + 공통 헤더."""
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    session.headers.update(_HTTP_HEADERS)
+    return session
+
+
+# 모듈 레벨 세션 (본문 추출용)
+_session = _make_session()
+
+
 def _fetch_page_content(url: str) -> str:
     """URL 에서 본문 텍스트를 추출한다. trafilatura → BeautifulSoup 순으로 시도."""
     import trafilatura  # noqa: C0415
 
     try:
-        resp = requests.get(url, headers=_HTTP_HEADERS, timeout=15)
+        resp = _session.get(url, timeout=15)
         resp.raise_for_status()
     except Exception:
         logger.exception("페이지 요청 실패: %s", url)
@@ -261,7 +272,7 @@ def _fetch_page_content(url: str) -> str:
                 if isinstance(data, list) and len(data) > idx:
                     content = data[idx]
                     if isinstance(content, str) and len(content) > 100:
-                        return _strip_html(content)
+                        return strip_html(content)
         except (json.JSONDecodeError, IndexError, ValueError):
             pass
 
@@ -285,6 +296,7 @@ class TechBlogCollector:
     ):
         self.feeds = feeds or _DEFAULT_FEEDS
         self.request_delay = request_delay
+        self.session = _make_session()
 
     def _fetch_feed(self, feed: BlogFeed) -> list[BlogArticle]:
         """한 피드의 글을 수집한다."""
@@ -325,12 +337,12 @@ class TechBlogCollector:
             if not url:
                 continue
 
-            title = _strip_html(entry.get("title", ""))
+            title = strip_html(entry.get("title", ""))
             if not title:
                 continue
 
             summary_raw = entry.get("summary") or entry.get("description") or ""
-            summary = _strip_html(summary_raw)
+            summary = strip_html(summary_raw)
 
             needs_fetch = not summary or _is_truncated(summary)
 
@@ -361,9 +373,7 @@ class TechBlogCollector:
         now_iso = datetime.now(KST).isoformat()
 
         try:
-            resp = requests.get(
-                _DEVOCEAN_LIST_URL, headers=_HTTP_HEADERS, timeout=15,
-            )
+            resp = self.session.get(_DEVOCEAN_LIST_URL, timeout=15)
             resp.raise_for_status()
         except Exception:
             logger.exception("데보션 목록 페이지 요청 실패")
@@ -426,7 +436,7 @@ class TechBlogCollector:
     def _fetch_devocean_summary(self, detail_url: str) -> str:
         """데보션 상세 페이지에서 DEVOTEE 요약을 추출한다."""
         try:
-            resp = requests.get(detail_url, headers=_HTTP_HEADERS, timeout=15)
+            resp = self.session.get(detail_url, timeout=15)
             resp.raise_for_status()
         except Exception:
             logger.exception("데보션 상세 페이지 요청 실패: %s", detail_url)
