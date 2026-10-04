@@ -470,6 +470,52 @@ Resources:
             Schedule: cron(30 20 * * ? *)
             Enabled: true
 
+  # ── Phase 4: 검색 API (API Gateway) ──
+  SearchApi:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerTag: search-api
+      DockerContext: .
+      Dockerfile: src/Dockerfile
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - app.search_api
+      Timeout: 30
+      MemorySize: 2048
+      VpcConfig:
+        SubnetIds: !Ref VpcSubnetIds
+        SecurityGroupIds: !Ref VpcSecurityGroupIds
+      Environment:
+        Variables:
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+          NAVER_API_SECRET_ARN: !Ref NaverApiSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref NaverApiSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        SearchGet:
+          Type: Api
+          Properties:
+            Path: /api/search
+            Method: get
+            RestApiId: !Ref PassrouteApi
+
+  PassrouteApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
   # ── DLQ 알람 → Discord 알림 ──
   DLQAlarmTopic:
     Type: AWS::SNS::Topic
@@ -661,6 +707,9 @@ Outputs:
   UrlIndexRebuilderArn:
     Description: URL 인덱스 재구축 Lambda ARN
     Value: !GetAtt UrlIndexRebuilder.Arn
+  SearchApiUrl:
+    Description: 검색 API 엔드포인트 URL
+    Value: !Sub "https://${PassrouteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/api/search"
   DLQAlarmTopicArn:
     Description: DLQ 알람 SNS 토픽 ARN
     Value: !Ref DLQAlarmTopic

@@ -395,3 +395,59 @@ def url_index_rebuilder(event, context):
         "statusCode": 200,
         "body": json.dumps({"url_count": len(urls)}),
     }
+
+
+# ── Phase 4: 검색 API (API Gateway 트리거) ──
+
+
+def search_api(event, context):
+    """검색 API. 채용공고 유사도 검색 + 네이버 뉴스/블로그 실시간 검색."""
+    from core.embedding import embed_text  # noqa: C0415
+    from core.secrets import get_database_url, get_naver_credentials  # noqa: C0415
+    from search.naver_realtime import _make_session, search_blog, search_news  # noqa: C0415
+    from search.pgvector_search import search_jobs  # noqa: C0415
+
+    params = event.get("queryStringParameters") or {}
+    query = params.get("q", "").strip()
+    company = params.get("company", "").strip() or None
+    limit = min(int(params.get("limit", "10")), 30)
+
+    if not query:
+        return {
+            "statusCode": 400,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": "q 파라미터가 필요합니다."}),
+        }
+
+    # 1. 쿼리 임베딩
+    query_embedding = embed_text(query)
+
+    # 2. pgvector 채용공고 유사도 검색
+    pg = _get_pg_storage()
+    job_results = search_jobs(pg.conn, query_embedding, limit=limit, company=company)
+
+    for job in job_results:
+        job["similarity"] = round(float(job["similarity"]), 4)
+
+    # 3. 네이버 실시간 검색 (뉴스 + 블로그)
+    search_query = f"{company} {query}" if company else query
+    client_id, client_secret = get_naver_credentials()
+    naver_session = _make_session(client_id, client_secret)
+
+    news_results = search_news(naver_session, f"{search_query} 기술", display=5)
+    blog_results = search_blog(naver_session, f"{search_query} 기술 블로그", display=5)
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps({
+            "query": query,
+            "company": company,
+            "jobs": job_results,
+            "news": news_results,
+            "blogs": blog_results,
+        }, ensure_ascii=False, default=str),
+    }
