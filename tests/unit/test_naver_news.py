@@ -241,70 +241,7 @@ class TestNaverNewsCollector:
         """세션에 인증 헤더가 설정되어 있는지 검증."""
         collector = self._make_collector()
 
-        assert collector.session.headers["X-Naver-Client-Id"] == "test_id"
-        assert collector.session.headers["X-Naver-Client-Secret"] == "test_secret"
+        assert collector.session.headers["X-NCP-APIGW-API-KEY-ID"] == "test_id"
+        assert collector.session.headers["X-NCP-APIGW-API-KEY"] == "test_secret"
 
 
-# ── news_collector 핸들러 ──
-
-
-class TestNewsCollectorHandler:
-    @patch("core.secrets.get_secret", return_value={"client_id": "test_id", "client_secret": "test_secret"})
-    @patch("app.NaverNewsCollector")
-    @patch("app._make_storage")
-    def test_handler_saves_new_news(self, mock_storage_fn, mock_collector_cls, mock_get_secret, monkeypatch):
-
-        mock_storage = MagicMock()
-        mock_storage.get_all_urls.return_value = set()
-        mock_storage.bucket = "test-bucket"
-        mock_storage_fn.return_value = mock_storage
-
-        item = NewsItem(
-            company_name="카카오",
-            title="카카오 AI",
-            description="설명",
-            url="https://news.com/new",
-            pub_date=datetime(2026, 4, 1, tzinfo=KST),
-            collected_at="2026-04-01T12:00:00+09:00",
-        )
-        mock_collector_cls.return_value.collect_all.return_value = [item]
-
-        import app as app_module
-        with patch.object(app_module, "build_document", return_value="doc", create=True), \
-             patch.object(app_module, "embed_text", return_value=[0.1] * 768, create=True):
-            # news_collector 에서 lazy import 하므로 직접 패치
-            with patch.dict("sys.modules", {
-                "embedding": MagicMock(
-                    build_document=MagicMock(return_value="doc"),
-                    embed_text=MagicMock(return_value=[0.1] * 768),
-                ),
-            }):
-                result = app_module.news_collector({}, None)
-
-        assert json.loads(result["body"])["saved"] == 1
-
-    @patch("core.secrets.get_secret", return_value={"client_id": "test_id", "client_secret": "test_secret"})
-    @patch("app.NaverNewsCollector")
-    @patch("app._make_storage")
-    def test_handler_skips_existing_urls(self, mock_storage_fn, mock_collector_cls, mock_get_secret, monkeypatch):
-
-        mock_storage = MagicMock()
-        mock_storage.get_all_urls.return_value = {"https://news.com/existing"}
-        mock_storage.bucket = "test-bucket"
-        mock_storage_fn.return_value = mock_storage
-
-        item = NewsItem(
-            company_name="카카오",
-            title="카카오 AI",
-            description="설명",
-            url="https://news.com/existing",
-            pub_date=datetime(2026, 4, 1, tzinfo=KST),
-            collected_at="2026-04-01T12:00:00+09:00",
-        )
-        mock_collector_cls.return_value.collect_all.return_value = [item]
-
-        import app as app_module
-        result = app_module.news_collector({}, None)
-
-        assert json.loads(result["body"])["skipped"] == 1
-        assert json.loads(result["body"])["saved"] == 0

@@ -1,5 +1,7 @@
-"""네이버 검색 API 실시간 호출 모듈. 뉴스/블로그를 검색 시점에 가져온다."""
+"""네이버 API HUB 검색 API 실시간 호출 모듈. 뉴스/웹문서를 검색 시점에 가져온다."""
 import logging
+import re
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -9,23 +11,24 @@ from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
 
-_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
-_BLOG_URL = "https://openapi.naver.com/v1/search/blog.json"
+_NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+_WEBKR_URL = "https://naverapihub.apigw.ntruss.com/search/v1/webkr"
 
 
-def _make_session(client_id: str, client_secret: str) -> requests.Session:
+def _make_session(api_key_id: str, api_key: str) -> requests.Session:
+    """네이버 API HUB 세션 생성."""
     session = requests.Session()
     retry = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.headers.update({
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
+        "X-NCP-APIGW-API-KEY-ID": api_key_id,
+        "X-NCP-APIGW-API-KEY": api_key,
     })
     return session
 
 
 def search_news(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
-    """네이버 뉴스 검색 API 실시간 호출."""
+    """네이버 API HUB 뉴스 검색 실시간 호출."""
     try:
         resp = session.get(_NEWS_URL, params={
             "query": query,
@@ -50,18 +53,17 @@ def search_news(session: requests.Session, query: str, *, display: int = 10) -> 
     ]
 
 
-def search_blog(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
-    """네이버 블로그 검색 API 실시간 호출."""
+def search_webkr(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
+    """네이버 API HUB 웹문서 검색 실시간 호출. 기술 블로그 등 웹 문서를 검색한다."""
     try:
-        resp = session.get(_BLOG_URL, params={
+        resp = session.get(_WEBKR_URL, params={
             "query": query,
             "display": display,
-            "sort": "date",
         }, timeout=5)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        logger.exception("네이버 블로그 검색 실패: query=%s", query)
+        logger.exception("네이버 웹문서 검색 실패: query=%s", query)
         return []
 
     return [
@@ -69,9 +71,72 @@ def search_blog(session: requests.Session, query: str, *, display: int = 10) -> 
             "title": strip_html(item.get("title", "")),
             "description": strip_html(item.get("description", "")),
             "url": item.get("link", ""),
-            "blogger_name": item.get("bloggername", ""),
-            "pub_date": item.get("postdate", ""),
-            "source": "naver_blog",
+            "source": "naver_webkr",
         }
         for item in data.get("items", [])
     ]
+
+
+# ── 웹문서 검색 결과 필터링 ──
+
+_SKIP_PATH_PATTERNS = re.compile(
+    r"(/tag/|/tags/|/category/|/categories/|/page/|/archive)"
+)
+
+
+def _is_article_url(url: str) -> bool:
+    """실제 글 URL인지 판별. 메인/태그/카테고리 페이지는 제외."""
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+
+    # 메인 페이지 (path가 비어있거나 / 하나)
+    if not path or path == "":
+        return False
+
+    # 태그, 카테고리, 아카이브 페이지
+    if _SKIP_PATH_PATTERNS.search(path):
+        return False
+
+    return True
+
+
+def filter_webkr_results(
+    results: list[dict],
+    keywords: list[str],
+    *,
+    max_results: int = 10,
+) -> list[dict]:
+    """웹문서 검색 결과를 필터링한다.
+
+    - 메인/태그/카테고리 페이지 제외
+    - description에 키워드가 포함된 결과 우선
+    - 중복 URL 제거
+    - 상위 max_results건만 반환
+    """
+    seen_urls: set[str] = set()
+    relevant: list[dict] = []
+    others: list[dict] = []
+
+    for item in results:
+        url = item.get("url", "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        if not _is_article_url(url):
+            continue
+
+        if item.get("description") and len(item["description"]) < 30:
+            continue
+
+        # 키워드가 제목이나 description에 포함되면 우선순위 높임
+        text = (item.get("title", "") + " " + item.get("description", "")).lower()
+        matched = any(kw.lower() in text for kw in keywords if kw)
+        if matched:
+            relevant.append(item)
+        else:
+            others.append(item)
+
+    # 키워드 매칭된 것 먼저, 나머지는 뒤에
+    filtered = relevant + others
+    return filtered[:max_results]

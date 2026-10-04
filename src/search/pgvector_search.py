@@ -1,4 +1,4 @@
-"""pgvector 유사도 검색 모듈. 임베딩 벡터로 채용공고를 검색한다."""
+f"""pgvector 유사도 검색 모듈. 임베딩 벡터로 채용공고를 검색한다."""
 import logging
 
 logger = logging.getLogger(__name__)

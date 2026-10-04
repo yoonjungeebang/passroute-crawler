@@ -2,8 +2,6 @@
 
 Stage 1 - Crawl:
   EventBridge cron → [job_list_collector] → SQS → [job_crawl] → S3(raw/)
-  EventBridge cron → [news_collector] → S3(raw/)
-  EventBridge cron → [blog_collector] → S3(raw/)
 Stage 2 - Embed:
   S3(raw/) → EventBridge → SQS → [embed_worker] → S3(parsed/)
 Stage 3 - Load:
@@ -19,7 +17,6 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
 
-from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict
 from core import KST
 from crawler.base import JobDetail, JobListingRef
 from crawler.registry import get_crawler, iter_sources
@@ -173,76 +170,6 @@ def job_crawl(event, context):
         time.sleep(random.uniform(1.0, 2.5))
 
     return {"statusCode": 200}
-
-
-# ── Stage 1: 뉴스 수집 (cron) ──
-
-
-def news_collector(event, context):
-    """주요 기업의 기술/사업 동향 뉴스를 수집하여 S3(raw/) 에 저장."""
-    from core.secrets import get_naver_credentials  # noqa: C0415
-
-    client_id, client_secret = get_naver_credentials()
-    storage = _make_storage()
-
-    existing_urls = storage.get_all_urls()
-
-    collector = NaverNewsCollector(client_id=client_id, client_secret=client_secret)
-    items = collector.collect_all()
-
-    saved = 0
-    skipped = 0
-    for item in items:
-        if item.url in existing_urls:
-            skipped += 1
-            continue
-
-        data = news_item_to_detail_dict(item)
-        storage.save_raw_dict(data)
-        saved += 1
-
-    logger.info("뉴스 수집 완료: 저장 %d건, 중복 스킵 %d건", saved, skipped)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"saved": saved, "skipped": skipped}),
-    }
-
-
-# ── Stage 1: 기술 블로그 수집 (cron) ──
-
-
-def blog_collector(event, context):
-    """주요 기업 기술 블로그 RSS 피드를 수집하여 S3(raw/) 에 저장."""
-    from collector.tech_blog import TechBlogCollector, blog_article_to_detail_dict  # noqa: C0415
-
-    storage = _make_storage()
-    existing_urls = storage.get_all_urls()
-
-    collector = TechBlogCollector()
-
-    saved = 0
-    skipped = 0
-
-    for feed in collector.feeds:
-        articles = collector._fetch_feed(feed)
-        logger.info("feed=%s: %d건 수집", feed.company_name, len(articles))
-
-        for article in articles:
-            if article.url in existing_urls:
-                skipped += 1
-                continue
-            data = blog_article_to_detail_dict(article)
-            storage.save_raw_dict(data)
-            saved += 1
-            existing_urls.add(article.url)
-
-        del articles
-
-    logger.info("블로그 수집 완료: S3 저장 %d건, 중복 스킵 %d건", saved, skipped)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"saved": saved, "skipped": skipped}),
-    }
 
 
 # ── Stage 2: 임베딩 워커 (SQS 트리거, S3 raw/ 이벤트) ──
@@ -401,10 +328,10 @@ def url_index_rebuilder(event, context):
 
 
 def search_api(event, context):
-    """검색 API. 채용공고 유사도 검색 + 네이버 뉴스/블로그 실시간 검색."""
+    """검색 API. 채용공고 유사도 검색 + 네이버 뉴스 실시간 검색."""
     from core.embedding import embed_text  # noqa: C0415
-    from core.secrets import get_database_url, get_naver_credentials  # noqa: C0415
-    from search.naver_realtime import _make_session, search_blog, search_news  # noqa: C0415
+    from core.secrets import get_naver_credentials  # noqa: C0415
+    from search.naver_realtime import _make_session, search_news  # noqa: C0415
     from search.pgvector_search import search_jobs  # noqa: C0415
 
     params = event.get("queryStringParameters") or {}
@@ -429,13 +356,12 @@ def search_api(event, context):
     for job in job_results:
         job["similarity"] = round(float(job["similarity"]), 4)
 
-    # 3. 네이버 실시간 검색 (뉴스 + 블로그)
+    # 3. 네이버 뉴스 실시간 검색
     search_query = f"{company} {query}" if company else query
     client_id, client_secret = get_naver_credentials()
     naver_session = _make_session(client_id, client_secret)
 
     news_results = search_news(naver_session, f"{search_query} 기술", display=5)
-    blog_results = search_blog(naver_session, f"{search_query} 기술 블로그", display=5)
 
     return {
         "statusCode": 200,
@@ -448,6 +374,159 @@ def search_api(event, context):
             "company": company,
             "jobs": job_results,
             "news": news_results,
-            "blogs": blog_results,
+        }, ensure_ascii=False, default=str),
+    }
+
+
+# ── 기업별 실시간 수집 API (API Gateway 트리거) ──
+
+
+def company_collect(event, context):
+    """기업 데이터 수집 API. 면접 방 생성 시 해당 기업의 기술 블로그 + 뉴스를 실시간 수집하여 DB 저장."""
+    from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict  # noqa: C0415
+    from collector.tech_blog import (  # noqa: C0415
+        _fetch_page_content,
+        _make_session as _make_blog_session,
+        fetch_content_from_rss,
+        find_rss_feed_url,
+    )
+    from core.secrets import get_naver_credentials  # noqa: C0415
+    from crawler.robots_check import RobotsChecker  # noqa: C0415
+    from search.naver_realtime import _make_session, filter_webkr_results, search_webkr  # noqa: C0415
+
+    params = event.get("queryStringParameters") or {}
+    company = params.get("company", "").strip()
+
+    if not company:
+        return {
+            "statusCode": 400,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": "company 파라미터가 필요합니다."}),
+        }
+
+    pg = _get_pg_storage()
+    news_saved = []
+
+    # 1. 뉴스 수집: 해당 기업만 네이버 뉴스 API 호출
+    client_id, client_secret = get_naver_credentials()
+    news_collector_inst = NaverNewsCollector(
+        client_id=client_id,
+        client_secret=client_secret,
+        companies=(company,),
+    )
+    news_items = news_collector_inst.collect_all()
+
+    for item in news_items:
+        data = news_item_to_detail_dict(item)
+        detail = JobDetail(
+            source=data["source"],
+            external_id=data["external_id"],
+            url=data["url"],
+            company_name=data["company_name"],
+            title=data["title"],
+            raw_text=data["raw_text"],
+            tech_stack=tuple(data.get("tech_stack", [])),
+            deadline=data.get("deadline", 0),
+            crawled_at=data["crawled_at"],
+            career_level=data.get("career_level", ""),
+        )
+        pg.save(detail)
+        news_saved.append({
+            "title": item.title,
+            "url": item.url,
+            "company_name": item.company_name,
+            "description": item.description,
+        })
+
+    logger.info("뉴스 수집: company=%s, %d건", company, len(news_items))
+
+    # 2. 기술 블로그 수집: 웹문서 검색 → RSS 본문 우선 → HTML 크롤링 폴백
+    keywords_param = params.get("keywords", "").strip()
+    keyword_list = [kw.strip() for kw in keywords_param.split(",") if kw.strip()] if keywords_param else []
+    max_crawl = min(int(params.get("max_articles", "10")), 20)
+
+    naver_session = _make_session(client_id, client_secret)
+    raw_results: list[dict] = []
+
+    if keyword_list:
+        for keyword in keyword_list:
+            query = f"{company} 기술블로그 {keyword}"
+            results = search_webkr(naver_session, query, display=5)
+            raw_results.extend(results)
+    else:
+        query = f"{company} 기술블로그"
+        raw_results = search_webkr(naver_session, query, display=10)
+
+    filtered = filter_webkr_results(raw_results, keyword_list, max_results=max_crawl)
+
+    logger.info(
+        "웹문서 검색: company=%s, keywords=%s, 원본 %d건 → 필터 %d건",
+        company, keywords_param, len(raw_results), len(filtered),
+    )
+
+    robots = RobotsChecker()
+    blog_session = _make_blog_session()
+    tech_articles = []
+
+    for item in filtered:
+        url = item["url"]
+        content = ""
+
+        # 1차: RSS에서 본문 추출 시도
+        rss_feed_url = find_rss_feed_url(url)
+        if rss_feed_url:
+            content = fetch_content_from_rss(rss_feed_url, url)
+            if content:
+                logger.info("RSS에서 본문 추출 성공: %s", url)
+
+        # 2차: RSS에 없으면 HTML 크롤링 (robots.txt 허용 시에만)
+        if not content:
+            if not robots.is_allowed(url):
+                logger.info("RSS에 없고 크롤링 차단, 스킵: %s", url)
+                continue
+            content = _fetch_page_content(blog_session, url)
+            time.sleep(0.5)
+
+        if not content:
+            logger.info("본문 추출 실패, 스킵: %s", url)
+            continue
+
+        tech_articles.append({
+            "title": item["title"],
+            "url": url,
+            "content": content,
+            "source": "tech_blog_webkr",
+        })
+
+        detail = JobDetail(
+            source="tech_blog_webkr",
+            external_id=url.rstrip("/").split("/")[-1][:16] or "webkr",
+            url=url,
+            company_name=company,
+            title=item["title"],
+            raw_text=content,
+            tech_stack=tuple(),
+            deadline=0,
+            crawled_at=datetime.now(KST).isoformat(),
+            career_level="",
+        )
+        pg.save(detail)
+
+    logger.info("기술 블로그 수집 완료: company=%s, %d건", company, len(tech_articles))
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps({
+            "company": company,
+            "news": news_saved,
+            "tech_articles": tech_articles,
+            "summary": {
+                "news_count": len(news_saved),
+                "tech_article_count": len(tech_articles),
+            },
         }, ensure_ascii=False, default=str),
     }

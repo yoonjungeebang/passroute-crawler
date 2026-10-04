@@ -2,7 +2,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from search.naver_realtime import search_blog, search_news
+from search.naver_realtime import search_news
 from search.pgvector_search import search_jobs
 
 
@@ -74,30 +74,6 @@ class TestNaverRealtime:
         assert len(results) == 1
         assert results[0]["title"] == "카카오 AI 기술 발표"
         assert results[0]["source"] == "naver_news"
-
-    @patch("search.naver_realtime.requests.Session")
-    def test_search_blog_returns_items(self, mock_session_cls):
-        """네이버 블로그 검색이 결과를 반환한다."""
-        mock_session = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "items": [
-                {
-                    "title": "Spring Boot <b>MSA</b> 전환기",
-                    "description": "카카오에서 MSA 전환한 경험을 공유합니다.",
-                    "link": "https://blog.example.com/1",
-                    "bloggername": "카카오 기술블로그",
-                    "postdate": "20260301",
-                }
-            ]
-        }
-        mock_session.get.return_value = mock_resp
-
-        results = search_blog(mock_session, "카카오 기술 블로그", display=5)
-
-        assert len(results) == 1
-        assert results[0]["title"] == "Spring Boot MSA 전환기"
-        assert results[0]["source"] == "naver_blog"
 
     def test_search_news_handles_error(self):
         """API 호출 실패 시 빈 리스트 반환."""
