@@ -2,9 +2,7 @@ requests
 beautifulsoup4
 feedparser
 trafilatura
-defusedxml>=0.7.1
 onnxruntime
 transformers
 numpy<2
-google-auth
 psycopg2-binary

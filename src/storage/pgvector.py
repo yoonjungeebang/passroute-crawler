@@ -114,7 +114,8 @@ class PgVectorStorage:
 
         document = "\n\n".join(parts)
         if not document:
-            logger.warning("저장할 텍스트 없음: %s", detail.url)
+            logger.warning(
+                "저장할 텍스트 없음: %s", detail.url)
             return
 
         params = {

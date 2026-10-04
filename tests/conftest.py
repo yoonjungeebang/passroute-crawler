@@ -40,5 +40,4 @@ def _set_required_env(monkeypatch):
     monkeypatch.setenv("DATABASE_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/database")
     monkeypatch.setenv("NAVER_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/naver-api")
     monkeypatch.setenv("DISCORD_WEBHOOK_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/discord")
-    monkeypatch.setenv("WORKNET_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/worknet")
     monkeypatch.setenv("SUPEROOKIE_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/superookie")

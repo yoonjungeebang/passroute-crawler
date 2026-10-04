@@ -80,11 +80,3 @@ def test_get_discord_webhook_url(mock_get_secret):
     assert result == "https://discord.com/api/webhooks/test"
 
 
-@patch("core.secrets.get_secret")
-def test_get_worknet_api_key(mock_get_secret):
-    """워크넷 API 키 문자열을 반환한다."""
-    mock_get_secret.return_value = {"api_key": "test-worknet-key"}
-
-    result = secrets_mod.get_worknet_api_key()
-
-    assert result == "test-worknet-key"

@@ -2,7 +2,6 @@
 
 Stage 1 - Crawl:
   EventBridge cron → [job_list_collector] → SQS → [job_crawl] → S3(raw/)
-  EventBridge cron → [worknet_collector] → S3(raw/)
   EventBridge cron → [news_collector] → S3(raw/)
   EventBridge cron → [blog_collector] → S3(raw/)
 Stage 2 - Embed:
@@ -176,38 +175,6 @@ def job_crawl(event, context):
     return {"statusCode": 200}
 
 
-# ── Stage 1: 워크넷 공공 API 수집 (cron) ──
-
-
-def worknet_collector(event, context):
-    """워크넷 공공데이터 API 로 IT 채용공고를 수집하여 S3(raw/) 에 저장."""
-    from core.secrets import get_worknet_api_key  # noqa: C0415
-    from collector.worknet import WorknetCollector, worknet_item_to_detail_dict  # noqa: C0415
-
-    api_key = get_worknet_api_key()
-    storage = _make_storage()
-    existing_urls = storage.get_all_urls()
-
-    collector = WorknetCollector(api_key=api_key)
-    items = collector.collect_all()
-
-    saved = 0
-    skipped = 0
-    for item in items:
-        if item.url in existing_urls:
-            skipped += 1
-            continue
-        data = worknet_item_to_detail_dict(item)
-        storage.save_raw_dict(data)
-        saved += 1
-
-    logger.info("워크넷 수집 완료: 저장 %d건, 중복 스킵 %d건", saved, skipped)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"saved": saved, "skipped": skipped}),
-    }
-
-
 # ── Stage 1: 뉴스 수집 (cron) ──
 
 
@@ -270,20 +237,6 @@ def blog_collector(event, context):
             existing_urls.add(article.url)
 
         del articles
-
-    devocean_articles = collector._fetch_devocean()
-    logger.info("feed=SK 데보션: %d건 수집", len(devocean_articles))
-
-    for article in devocean_articles:
-        if article.url in existing_urls:
-            skipped += 1
-            continue
-        data = blog_article_to_detail_dict(article)
-        storage.save_raw_dict(data)
-        saved += 1
-        existing_urls.add(article.url)
-
-    del devocean_articles
 
     logger.info("블로그 수집 완료: S3 저장 %d건, 중복 스킵 %d건", saved, skipped)
     return {

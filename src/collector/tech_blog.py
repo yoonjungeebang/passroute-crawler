@@ -1,10 +1,12 @@
 """주요 IT 기업 기술 블로그 수집 모듈.
 
-22개 RSS/Atom 피드 + SK 데보션(HTML 크롤링)으로 기술 블로그 글을 수집한다.
-RSS 요약이 잘린 경우 trafilatura → BeautifulSoup 순으로 본문을 직접 추출한다.
+RSS/Atom 피드에서 기술 블로그 글을 수집한다.
+콘텐츠 확보 전략 (3단계):
+  1. RSS content:encoded 에 본문 전체가 있으면 그대로 사용
+  2. 없으면 robots.txt 확인 후 허용된 페이지만 본문 크롤링
+  3. 크롤링 차단 시 제목만 저장
 """
 import hashlib
-import json
 import logging
 import re
 import time
@@ -19,13 +21,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from core import KST
+from crawler.robots_check import RobotsChecker
 from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
 
 BLOG_RETENTION_DAYS = 365
-_MAX_FETCH_CONTENT = 5
+_MAX_FETCH_PER_FEED = 5
 _FEED_FILTER_DAYS = timedelta(days=365)
+_MIN_CONTENT_LENGTH = 100
 
 # ── 블로그 피드 설정 ──
 
@@ -56,18 +60,10 @@ _DEFAULT_FEEDS: tuple[BlogFeed, ...] = (
     BlogFeed("무신사", "https://medium.com/feed/musinsa-tech"),
     BlogFeed("뱅크샐러드", "https://blog.banksalad.com/rss.xml"),
     BlogFeed("야놀자", "https://medium.com/feed/yanoljacloud-tech"),
-    BlogFeed("쏘카", "https://tech.socarcorp.kr/feed.xml"),
-    BlogFeed("넷마블", "https://netmarble.engineering/feed/"),
+    BlogFeed("쏘카", "https://tech.socar.kr/feed.xml"),
     BlogFeed("지마켓", "https://dev.gmarket.com/rss"),
     BlogFeed("11번가", "https://11st-tech.github.io/rss/"),
 )
-
-# ── SK 데보션 (HTML 크롤링) ──
-
-_DEVOCEAN_LIST_URL = "https://devocean.sk.com/blog/index.do?p=BLOG"
-_DEVOCEAN_DETAIL_URL = "https://devocean.sk.com/blog/techBoardDetail.do?ID={board_id}"
-_DEVOCEAN_COMPANY = "SK"
-_DEVOTEE_MARKER = "DEVOTEE 요약"
 
 _HTTP_HEADERS = {
     "User-Agent": (
@@ -88,7 +84,7 @@ class BlogArticle:
     """블로그 글 1건."""
     company_name: str
     title: str
-    summary: str
+    content: str
     url: str
     pub_date: datetime
     collected_at: str
@@ -112,22 +108,62 @@ def _parse_pub_date(entry: dict) -> datetime:
     return datetime.now(KST)
 
 
-def _is_truncated(text: str) -> bool:
-    """본문 앞부분만 잘려서 들어온 요약인지 판별한다."""
-    return text.endswith("…") or text.endswith("...")
-
-
 def _make_external_id(url: str) -> str:
     """URL 에서 결정적 external_id 를 생성."""
     return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
-def _parse_devocean_date(date_str: str) -> datetime:
-    """데보션 날짜 문자열(YY.MM.DD)을 datetime 으로 변환."""
+def _extract_rss_content(entry: dict) -> str:
+    """RSS 엔트리에서 최대한 풍부한 콘텐츠를 추출한다.
+
+    우선순위: content:encoded (본문 전체) > summary/description
+    """
+    # feedparser 는 content:encoded 를 entry.content 리스트에 넣는다
+    if hasattr(entry, "content") and entry.content:
+        for c in entry.content:
+            text = strip_html(c.get("value", ""))
+            if len(text) >= _MIN_CONTENT_LENGTH:
+                return text
+
+    # summary / description
+    summary_raw = entry.get("summary") or entry.get("description") or ""
+    return strip_html(summary_raw)
+
+
+def _make_session() -> requests.Session:
+    """기술 블로그 수집용 세션 생성: 재시도 정책 + 공통 헤더."""
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    session.headers.update(_HTTP_HEADERS)
+    return session
+
+
+def _fetch_page_content(session: requests.Session, url: str) -> str:
+    """URL 에서 본문 텍스트를 추출한다. trafilatura → BeautifulSoup 순으로 시도."""
+    import trafilatura  # noqa: C0415
+
     try:
-        return datetime.strptime(date_str.strip(), "%y.%m.%d").replace(tzinfo=KST)
-    except (ValueError, AttributeError):
-        return datetime.now(KST)
+        resp = session.get(url, timeout=15)
+        resp.raise_for_status()
+    except Exception:
+        logger.exception("페이지 요청 실패: %s", url)
+        return ""
+
+    resp.encoding = resp.apparent_encoding
+
+    text = trafilatura.extract(resp.text)
+    if text and len(text) >= _MIN_CONTENT_LENGTH:
+        return text
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for selector in ["article", "[class*=content]", "[class*=post]", "main"]:
+        el = soup.select_one(selector)
+        if el and len(el.get_text(strip=True)) >= _MIN_CONTENT_LENGTH:
+            return el.get_text(separator="\n", strip=True)
+
+    return ""
 
 
 # ── 직무 카테고리 키워드 매핑 ──
@@ -217,76 +253,14 @@ def _deadline_from_pub_date(pub_date: datetime) -> int:
     return int(expiry.timestamp())
 
 
-def _has_meaningful_content(text: str) -> bool:
-    """추출된 텍스트가 네비게이션 노이즈가 아닌 실제 본문인지 판별."""
-    avg_line_len = len(text) / max(text.count("\n") + 1, 1)
-    return avg_line_len > 30
-
-
-def _make_session() -> requests.Session:
-    """기술 블로그 수집용 세션 생성: 재시도 정책 + 공통 헤더."""
-    session = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    session.mount("http://", HTTPAdapter(max_retries=retry))
-    session.headers.update(_HTTP_HEADERS)
-    return session
-
-
-# 모듈 레벨 세션 (본문 추출용)
-_session = _make_session()
-
-
-def _fetch_page_content(url: str) -> str:
-    """URL 에서 본문 텍스트를 추출한다. trafilatura → BeautifulSoup 순으로 시도."""
-    import trafilatura  # noqa: C0415
-
-    try:
-        resp = _session.get(url, timeout=15)
-        resp.raise_for_status()
-    except Exception:
-        logger.exception("페이지 요청 실패: %s", url)
-        return ""
-
-    resp.encoding = resp.apparent_encoding
-
-    text = trafilatura.extract(resp.text)
-    if text and len(text) > 200 and _has_meaningful_content(text):
-        return text
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Nuxt/Next.js JSON 데이터에서 본문 추출 (카카오 등)
-    for script in soup.find_all("script"):
-        script_text = script.get_text()
-        if '"content":' not in script_text or len(script_text) < 5000:
-            continue
-        arr_start = script_text.find('[["ShallowReactive"')
-        if arr_start < 0:
-            continue
-        try:
-            data = json.loads(script_text[arr_start:])
-            content_idx_match = re.search(r'"content":\s*(\d+)', script_text)
-            if content_idx_match:
-                idx = int(content_idx_match.group(1))
-                if isinstance(data, list) and len(data) > idx:
-                    content = data[idx]
-                    if isinstance(content, str) and len(content) > 100:
-                        return strip_html(content)
-        except (json.JSONDecodeError, IndexError, ValueError):
-            pass
-
-    # 일반 article/content 영역 추출
-    for selector in ["article", "[class*=content]", "[class*=post]", "main"]:
-        el = soup.select_one(selector)
-        if el and len(el.get_text(strip=True)) > 200:
-            return el.get_text(separator="\n", strip=True)
-
-    return ""
-
-
 class TechBlogCollector:
-    """RSS/Atom 피드 + SK 데보션으로 기업 기술 블로그 글을 수집한다."""
+    """RSS/Atom 피드에서 기술 블로그 글을 수집한다.
+
+    콘텐츠 확보 3단계 전략:
+      1. RSS content:encoded 에 본문이 있으면 그대로 사용
+      2. 없으면 robots.txt 허용 시 페이지 크롤링
+      3. 차단 시 제목만 저장
+    """
 
     def __init__(
         self,
@@ -297,6 +271,7 @@ class TechBlogCollector:
         self.feeds = feeds or _DEFAULT_FEEDS
         self.request_delay = request_delay
         self.session = _make_session()
+        self.robots = RobotsChecker()
 
     def _fetch_feed(self, feed: BlogFeed) -> list[BlogArticle]:
         """한 피드의 글을 수집한다."""
@@ -321,7 +296,7 @@ class TechBlogCollector:
 
         entries = parsed.entries
 
-        # 20건 초과 피드는 최근 2년 이내 글만
+        # 20건 초과 피드는 최근 1년 이내 글만
         if len(entries) > 20:
             cutoff = now - _FEED_FILTER_DAYS
             entries = [
@@ -341,26 +316,23 @@ class TechBlogCollector:
             if not title:
                 continue
 
-            summary_raw = entry.get("summary") or entry.get("description") or ""
-            summary = strip_html(summary_raw)
+            # 1단계: RSS 에서 콘텐츠 추출
+            content = _extract_rss_content(entry)
 
-            needs_fetch = not summary or _is_truncated(summary)
-
-            if needs_fetch and fetch_count < _MAX_FETCH_CONTENT:
-                content = _fetch_page_content(url)
-                if content:
-                    summary = content
-                else:
-                    summary = ""
+            # 2단계: 콘텐츠 부족 시 robots.txt 허용된 페이지만 크롤링
+            if len(content) < _MIN_CONTENT_LENGTH and fetch_count < _MAX_FETCH_PER_FEED:
+                if self.robots.is_allowed(url):
+                    fetched = _fetch_page_content(self.session, url)
+                    if fetched:
+                        content = fetched
+                    time.sleep(self.request_delay)
                 fetch_count += 1
-                time.sleep(self.request_delay)
-            elif needs_fetch:
-                summary = ""
 
+            # 3단계: 콘텐츠가 여전히 없으면 제목만 저장
             articles.append(BlogArticle(
                 company_name=feed.company_name,
                 title=title,
-                summary=summary,
+                content=content,
                 url=url,
                 pub_date=_parse_pub_date(entry),
                 collected_at=now_iso,
@@ -368,105 +340,8 @@ class TechBlogCollector:
 
         return articles
 
-    def _fetch_devocean(self) -> list[BlogArticle]:
-        """SK 데보션 블로그를 HTML 크롤링으로 수집한다."""
-        now_iso = datetime.now(KST).isoformat()
-
-        try:
-            resp = self.session.get(_DEVOCEAN_LIST_URL, timeout=15)
-            resp.raise_for_status()
-        except Exception:
-            logger.exception("데보션 목록 페이지 요청 실패")
-            return []
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        board_elements = soup.find_all(attrs={"data-board-id": True})
-
-        seen_ids: set[str] = set()
-        board_ids: list[str] = []
-        titles: dict[str, str] = {}
-        dates: dict[str, str] = {}
-
-        for el in board_elements:
-            bid = el.get("data-board-id")
-            if bid in seen_ids:
-                continue
-            seen_ids.add(bid)
-            board_ids.append(bid)
-
-            card = el
-            for _ in range(5):
-                if card.parent:
-                    card = card.parent
-                if len(card.get_text(strip=True)) > 50:
-                    break
-
-            title_el = card.find(class_=re.compile(r"tit|title|subject"))
-            titles[bid] = title_el.get_text(strip=True) if title_el else ""
-
-            date_el = card.find(class_=re.compile(r"date|time"))
-            dates[bid] = date_el.get_text(strip=True) if date_el else ""
-
-        articles: list[BlogArticle] = []
-        for bid in board_ids:
-            title = titles.get(bid, "")
-            if not title:
-                continue
-
-            detail_url = _DEVOCEAN_DETAIL_URL.format(board_id=bid)
-            summary = self._fetch_devocean_summary(detail_url)
-            if not summary:
-                continue
-
-            pub_date = _parse_devocean_date(dates.get(bid, ""))
-
-            articles.append(BlogArticle(
-                company_name=_DEVOCEAN_COMPANY,
-                title=title,
-                summary=summary,
-                url=detail_url,
-                pub_date=pub_date,
-                collected_at=now_iso,
-            ))
-
-            time.sleep(self.request_delay)
-
-        return articles
-
-    def _fetch_devocean_summary(self, detail_url: str) -> str:
-        """데보션 상세 페이지에서 DEVOTEE 요약을 추출한다."""
-        try:
-            resp = self.session.get(detail_url, timeout=15)
-            resp.raise_for_status()
-        except Exception:
-            logger.exception("데보션 상세 페이지 요청 실패: %s", detail_url)
-            return ""
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        view = soup.select_one(".sub-view-cont")
-        if not view:
-            return ""
-
-        text = view.get_text(separator="\n", strip=True)
-        if _DEVOTEE_MARKER not in text:
-            return ""
-
-        idx = text.index(_DEVOTEE_MARKER) + len(_DEVOTEE_MARKER)
-        after = text[idx:].strip()
-
-        lines: list[str] = []
-        for line in after.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                if lines:
-                    break
-                continue
-            lines.append(stripped)
-
-        return " ".join(lines)
-
     def collect_all(self) -> list[BlogArticle]:
-        """전체 피드 + SK 데보션에서 블로그 글을 수집한다. URL 기준 전역 중복 제거."""
+        """전체 RSS 피드에서 블로그 글을 수집한다. URL 기준 전역 중복 제거."""
         all_articles: list[BlogArticle] = []
         global_seen_urls: set[str] = set()
 
@@ -482,17 +357,8 @@ class TechBlogCollector:
 
             time.sleep(self.request_delay)
 
-        devocean_articles = self._fetch_devocean()
-        for article in devocean_articles:
-            if article.url in global_seen_urls:
-                continue
-            global_seen_urls.add(article.url)
-            all_articles.append(article)
-
-        logger.info("feed=SK 데보션: %d건 수집", len(devocean_articles))
-
         logger.info(
-            "전체 블로그 수집 완료: %d건 (RSS %d개 + SK 데보션)",
+            "전체 블로그 수집 완료: %d건 (RSS %d개)",
             len(all_articles), len(self.feeds),
         )
         return all_articles
@@ -500,10 +366,9 @@ class TechBlogCollector:
 
 def blog_article_to_detail_dict(article: BlogArticle) -> dict:
     """BlogArticle 을 S3 저장용 dict 로 변환. JobDetail 호환 형식."""
-    content = f"{article.title}\n\n{article.summary}" if article.summary else article.title
-    categories = _classify_job_categories(content)
+    raw_text = f"{article.title}\n\n{article.content}" if article.content else article.title
+    categories = _classify_job_categories(raw_text)
 
-    raw_text = content
     if categories:
         raw_text += f"\n\n[직무]\n{', '.join(categories)}"
 

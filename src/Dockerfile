@@ -5,4 +5,4 @@ FROM ${BASE_IMAGE}
 
 COPY src/ ${LAMBDA_TASK_ROOT}/
 
-CMD ["app.job_detail_crawler"]
+CMD ["app.embed_worker"]

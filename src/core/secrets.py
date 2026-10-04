@@ -55,13 +55,6 @@ def get_discord_webhook_url() -> str:
     return s["webhook_url"]
 
 
-def get_worknet_api_key() -> str:
-    """WORKNET_API_SECRET_ARN에서 API 인증키 반환."""
-    arn = os.environ["WORKNET_API_SECRET_ARN"]
-    s = get_secret(arn)
-    return s["api_key"]
-
-
 def get_superookie_access_token() -> str:
     """SUPEROOKIE_API_SECRET_ARN에서 액세스 토큰 반환."""
     arn = os.environ["SUPEROOKIE_API_SECRET_ARN"]
