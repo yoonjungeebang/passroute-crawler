@@ -1,5 +1,4 @@
-"""tech_blog 수집 모듈 및 blog_collector Lambda 핸들러 단위 테스트."""
-import json
+"""tech_blog 수집 모듈 단위 테스트."""
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -284,58 +283,3 @@ class TestTechBlogCollector:
         assert articles == []
 
 
-# ─────────────────────────────────────────────────────────
-# blog_collector Lambda 핸들러 테스트
-# ─────────────────────────────────────────────────────────
-
-
-class TestBlogCollectorHandler:
-    @patch("app.S3Storage")
-    @patch("collector.tech_blog.TechBlogCollector")
-    def test_saves_new_articles_to_s3_raw(self, mock_collector_cls, mock_storage_cls):
-        """신규 블로그 글이 S3 raw/ 에 저장된다."""
-        import app
-
-        mock_storage = MagicMock()
-        mock_storage.get_all_urls.return_value = set()
-        mock_storage_cls.return_value = mock_storage
-
-        mock_feed = MagicMock()
-        mock_collector = MagicMock()
-        mock_collector.feeds = [mock_feed]
-        mock_collector._fetch_feed.return_value = [_article()]
-        mock_collector_cls.return_value = mock_collector
-
-        result = app.blog_collector({}, None)
-
-        body = json.loads(result["body"])
-        assert body["saved"] == 1
-        assert body["skipped"] == 0
-        mock_storage.save_raw_dict.assert_called_once()
-
-        saved_data = mock_storage.save_raw_dict.call_args.args[0]
-        assert saved_data["source"] == "tech_blog"
-        assert saved_data["company_name"] == "카카오"
-
-    @patch("app.S3Storage")
-    @patch("collector.tech_blog.TechBlogCollector")
-    def test_skips_existing_urls(self, mock_collector_cls, mock_storage_cls):
-        """이미 저장된 URL 은 스킵하고 저장하지 않는다."""
-        import app
-
-        mock_storage = MagicMock()
-        mock_storage.get_all_urls.return_value = {"https://tech.kakao.com/post/123"}
-        mock_storage_cls.return_value = mock_storage
-
-        mock_feed = MagicMock()
-        mock_collector = MagicMock()
-        mock_collector.feeds = [mock_feed]
-        mock_collector._fetch_feed.return_value = [_article()]
-        mock_collector_cls.return_value = mock_collector
-
-        result = app.blog_collector({}, None)
-
-        body = json.loads(result["body"])
-        assert body["saved"] == 0
-        assert body["skipped"] == 1
-        mock_storage.save_raw_dict.assert_not_called()

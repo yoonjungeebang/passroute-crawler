@@ -24,7 +24,7 @@ from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
 
-NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
+NAVER_NEWS_API_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 MAX_DISPLAY = 100
 NEWS_RETENTION_DAYS = 90
 
@@ -149,8 +149,8 @@ class NaverNewsCollector:
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.mount("http://", HTTPAdapter(max_retries=retry))
         self.session.headers.update({
-            "X-Naver-Client-Id": self.client_id,
-            "X-Naver-Client-Secret": self.client_secret,
+            "X-NCP-APIGW-API-KEY-ID": self.client_id,
+            "X-NCP-APIGW-API-KEY": self.client_secret,
         })
 
     def _call_api(self, query: str, display: int = MAX_DISPLAY, start: int = 1) -> dict:
