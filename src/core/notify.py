@@ -12,7 +12,9 @@ logger.setLevel(logging.INFO)
 
 _DLQ_QUEUES = (
     "passroute-job-detail-dlq",
-    "passroute-blog-embedding-dlq",
+    "passroute-source-collect-dlq",
+    "passroute-embed-dlq",
+    "passroute-db-load-dlq",
 )
 
 
@@ -34,7 +36,14 @@ def _send_discord(webhook_url: str, payload: dict) -> None:
 
 def discord_notifier(event, _context):
     """SNS 메시지를 받아 Discord 웹훅으로 전송한다."""
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    from core.secrets import get_discord_webhook_url  # noqa: C0415
+
+    try:
+        webhook_url = get_discord_webhook_url()
+    except Exception:
+        logger.exception("Discord 웹훅 URL 조회 실패")
+        return
+
     if not webhook_url:
         logger.error("DISCORD_WEBHOOK_URL 환경변수 누락")
         return
@@ -85,7 +94,14 @@ def discord_notifier(event, _context):
 
 def dlq_daily_check(event, _context):
     """매일 DLQ 메시지 수를 확인하고, 1건 이상이면 Discord 로 재알림."""
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    from core.secrets import get_discord_webhook_url  # noqa: C0415
+
+    try:
+        webhook_url = get_discord_webhook_url()
+    except Exception:
+        logger.exception("Discord 웹훅 URL 조회 실패")
+        return
+
     if not webhook_url:
         logger.error("DISCORD_WEBHOOK_URL 환경변수 누락")
         return

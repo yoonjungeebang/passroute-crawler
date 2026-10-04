@@ -1,25 +1,33 @@
 """passroute-crawler Lambda 핸들러.
 
-EventBridge cron → [job_list_collector] → SQS → [job_detail_crawler] → S3 → EC2 consumer → PostgreSQL(pgvector)
-EventBridge cron → [news_collector] → S3 → EC2 consumer → PostgreSQL(pgvector)
-EventBridge cron → [blog_collector] → SQS → [blog_embedding] → S3 → EC2 consumer → PostgreSQL(pgvector)
+Stage 1 - Crawl:
+  EventBridge cron → [job_list_collector] → SQS → [job_crawl] → S3(raw/)
+  EventBridge cron → [news_collector] → S3(raw/)
+  EventBridge cron → [blog_collector] → S3(raw/)
+Stage 2 - Embed:
+  S3(raw/) → EventBridge → SQS → [embed_worker] → S3(parsed/)
+Stage 3 - Load:
+  S3(parsed/) → EventBridge → SQS → [db_loader] → PostgreSQL(pgvector)
 """
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+import random
+import time
+from datetime import datetime
 
 import boto3
+from botocore.exceptions import ClientError
 
 from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict
-from crawler.base import ImageJobDetail, JobDetail, JobListingRef
+from core import KST
+from crawler.base import JobDetail, JobListingRef
 from crawler.registry import get_crawler, iter_sources
 from storage.s3 import S3Storage
 
 logger = logging.getLogger(__name__)
 
 SQS_BATCH_SIZE = 10
-KST = timezone(timedelta(hours=9))
 
 
 def _required_env(name: str) -> str:
@@ -37,29 +45,65 @@ def _make_storage() -> S3Storage:
 
 
 def job_list_collector(event, context):
-    """마감 공고 삭제 → 전체 목록 수집 → 신규만 JobDetailQueue 전송."""
+    """마감 공고 삭제 → 소스별 수집 메시지를 SourceCollectQueue 로 발행."""
     sqs = boto3.client("sqs")
     storage = _make_storage()
-    queue_url = _required_env("JOB_DETAIL_QUEUE_URL")
+    source_queue_url = _required_env("SOURCE_COLLECT_QUEUE_URL")
 
     delete_requested = storage.delete_expired(datetime.now(KST).isoformat())
-    existing_urls = storage.get_all_urls()
 
-    total_new = 0
-    for source in iter_sources():
-        crawler = get_crawler(source)
-        logger.info("source=%s 목록 수집 시작", source)
-        refs = crawler.collect_listings()
-        logger.info("source=%s 수집 완료: %d건", source, len(refs))
-
-        new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
-        total_new += new_count
-        logger.info("source=%s 신규 %d건 SQS 전송", source, new_count)
+    sources = list(iter_sources())
+    for source in sources:
+        sqs.send_message(
+            QueueUrl=source_queue_url,
+            MessageBody=json.dumps({"source": source}, ensure_ascii=False),
+        )
+        logger.info("소스 수집 메시지 전송: %s", source)
 
     return {
         "statusCode": 200,
-        "body": json.dumps({"new": total_new, "delete_requested": delete_requested}),
+        "body": json.dumps({
+            "dispatched_sources": sources,
+            "delete_requested": delete_requested,
+        }),
     }
+
+
+def source_collect_worker(event, context):
+    """소스 1건 목록 수집 → 신규 공고 JobDetailQueue 전송.
+
+    Tier 2 크롤러는 robots.txt 를 사전 확인하여 차단 시 자동 스킵.
+    """
+    from crawler.robots_check import RobotsChecker  # noqa: C0415
+
+    sqs = boto3.client("sqs")
+    storage = _make_storage()
+    queue_url = _required_env("JOB_DETAIL_QUEUE_URL")
+    robots_checker = RobotsChecker()
+
+    for record in event["Records"]:
+        message = json.loads(record["body"])
+        source = message["source"]
+
+        existing_urls = storage.get_all_urls()
+        crawler = get_crawler(source)
+
+        # robots.txt 사전 확인
+        if crawler.base_url and not robots_checker.check_and_alert(crawler.base_url, source):
+            logger.warning("source=%s: robots.txt 차단, 스킵", source)
+            continue
+
+        logger.info("source=%s 목록 수집 시작", source)
+        try:
+            refs = crawler.collect_listings()
+        except Exception:
+            logger.exception("source=%s 목록 수집 실패", source)
+            raise
+
+        new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
+        logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
+
+    return {"statusCode": 200}
 
 
 def _dispatch_new_listings(
@@ -95,13 +139,11 @@ def _dispatch_new_listings(
     return new_count
 
 
-# ── Lambda 2: 상세 크롤러 ──
+# ── Stage 1: 상세 크롤러 (SQS 트리거) ──
 
 
-def job_detail_crawler(event, context):
-    """SQS 트리거. 공고 1건 상세 크롤링 → S3 저장."""
-    from embedding import build_document, embed_text  # noqa: C0415
-
+def job_crawl(event, context):
+    """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장."""
     storage = _make_storage()
 
     for record in event["Records"]:
@@ -118,37 +160,29 @@ def job_detail_crawler(event, context):
         logger.info("상세 크롤링: source=%s id=%s (%s)", ref.source, ref.external_id, ref.company_name)
 
         try:
-            result = crawler.fetch_detail(ref)
-            if result is None:
-                logger.info("텍스트·이미지 모두 없음, 스킵: id=%s", ref.external_id)
+            detail = crawler.fetch_detail(ref)
+            if detail is None:
+                logger.info("상세 정보 없음, 스킵: id=%s", ref.external_id)
                 continue
 
-            if isinstance(result, ImageJobDetail):
-                detail = _process_image_jd(result)
-                if detail is None:
-                    continue
-            else:
-                detail = result
-
-            document = build_document(detail.raw_text, detail.tech_stack)
-            embedding = embed_text(document)
-            storage.save(detail, embedding=embedding)
+            storage.save_raw(detail)
         except Exception:
             logger.exception("상세 크롤링 실패: id=%s", ref.external_id)
             raise
 
+        time.sleep(random.uniform(1.0, 2.5))
+
     return {"statusCode": 200}
 
 
-# ── Lambda 3: 뉴스 수집 (cron) ──
+# ── Stage 1: 뉴스 수집 (cron) ──
 
 
 def news_collector(event, context):
-    """주요 기업의 기술/사업 동향 뉴스를 수집하여 S3 에 저장."""
-    from embedding import build_document, embed_text  # noqa: C0415
+    """주요 기업의 기술/사업 동향 뉴스를 수집하여 S3(raw/) 에 저장."""
+    from core.secrets import get_naver_credentials  # noqa: C0415
 
-    client_id = _required_env("NAVER_CLIENT_ID")
-    client_secret = _required_env("NAVER_CLIENT_SECRET")
+    client_id, client_secret = get_naver_credentials()
     storage = _make_storage()
 
     existing_urls = storage.get_all_urls()
@@ -164,20 +198,7 @@ def news_collector(event, context):
             continue
 
         data = news_item_to_detail_dict(item)
-
-        try:
-            document = build_document(data["raw_text"], tuple(data["tech_stack"]))
-            embedding = embed_text(document)
-            data["embedding"] = embedding
-        except Exception:
-            logger.exception("임베딩 실패, 임베딩 없이 저장: id=%s", data["external_id"])
-
-        key = f"parsed/{data['source']}/{data['external_id']}.json"
-        storage.s3.put_object(
-            Bucket=storage.bucket,
-            Key=key,
-            Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
-        )
+        storage.save_raw_dict(data)
         saved += 1
 
     logger.info("뉴스 수집 완료: 저장 %d건, 중복 스킵 %d건", saved, skipped)
@@ -187,24 +208,19 @@ def news_collector(event, context):
     }
 
 
-# ── Lambda 4: 기술 블로그 수집 (cron) ──
+# ── Stage 1: 기술 블로그 수집 (cron) ──
 
 
 def blog_collector(event, context):
-    """주요 기업 기술 블로그 RSS 피드를 수집하여 신규 글을 SQS 로 전송.
-
-    임베딩은 별도 Lambda(blog_embedding)가 SQS 트리거로 1건씩 처리한다.
-    """
+    """주요 기업 기술 블로그 RSS 피드를 수집하여 S3(raw/) 에 저장."""
     from collector.tech_blog import TechBlogCollector, blog_article_to_detail_dict  # noqa: C0415
 
-    sqs = boto3.client("sqs")
-    queue_url = _required_env("BLOG_EMBEDDING_QUEUE_URL")
     storage = _make_storage()
     existing_urls = storage.get_all_urls()
 
     collector = TechBlogCollector()
 
-    new_data_list: list[dict] = []
+    saved = 0
     skipped = 0
 
     for feed in collector.feeds:
@@ -215,110 +231,167 @@ def blog_collector(event, context):
             if article.url in existing_urls:
                 skipped += 1
                 continue
-            new_data_list.append(blog_article_to_detail_dict(article))
+            data = blog_article_to_detail_dict(article)
+            storage.save_raw_dict(data)
+            saved += 1
             existing_urls.add(article.url)
 
         del articles
 
-    devocean_articles = collector._fetch_devocean()
-    logger.info("feed=SK 데보션: %d건 수집", len(devocean_articles))
-
-    for article in devocean_articles:
-        if article.url in existing_urls:
-            skipped += 1
-            continue
-        new_data_list.append(blog_article_to_detail_dict(article))
-        existing_urls.add(article.url)
-
-    del devocean_articles
-
-    new_count = _dispatch_blog_articles(sqs, queue_url, new_data_list)
-
-    logger.info("블로그 수집 완료: SQS 전송 %d건, 중복 스킵 %d건", new_count, skipped)
+    logger.info("블로그 수집 완료: S3 저장 %d건, 중복 스킵 %d건", saved, skipped)
     return {
         "statusCode": 200,
-        "body": json.dumps({"new": new_count, "skipped": skipped}),
+        "body": json.dumps({"saved": saved, "skipped": skipped}),
     }
 
 
-def _dispatch_blog_articles(sqs, queue_url: str, data_list: list[dict]) -> int:
-    """블로그 글 dict 를 BlogEmbeddingQueue 로 배치 전송."""
-    batch: list[dict] = []
-
-    for data in data_list:
-        batch.append({
-            "Id": str(len(batch)),
-            "MessageBody": json.dumps(data, ensure_ascii=False),
-        })
-
-        if len(batch) == SQS_BATCH_SIZE:
-            sqs.send_message_batch(QueueUrl=queue_url, Entries=batch)
-            batch = []
-
-    if batch:
-        sqs.send_message_batch(QueueUrl=queue_url, Entries=batch)
-
-    return len(data_list)
+# ── Stage 2: 임베딩 워커 (SQS 트리거, S3 raw/ 이벤트) ──
 
 
-# ── Lambda 5: 블로그 임베딩 (SQS 트리거) ──
+def embed_worker(event, context):
+    """SQS 트리거. S3 raw/ PutObject 이벤트 → 임베딩 → S3(parsed/) 저장."""
+    from core.embedding import build_document, embed_text  # noqa: C0415
 
-
-def blog_embedding(event, context):
-    """SQS 트리거. 블로그 글 1건 임베딩 → S3 저장."""
-    from embedding import build_document, embed_text  # noqa: C0415
-
-    storage = _make_storage()
+    s3 = boto3.client("s3")
 
     for record in event["Records"]:
-        data = json.loads(record["body"])
-        logger.info(
-            "블로그 임베딩: %s - %s", data["company_name"], data["title"],
-        )
+        envelope = json.loads(record["body"])
+        bucket = envelope["detail"]["bucket"]["name"]
+        key = envelope["detail"]["object"]["key"]
 
+        if not (key.startswith("raw/") and key.endswith(".json")):
+            logger.warning("embed_worker: 예상하지 못한 키, 스킵: %s", key)
+            continue
+
+        # 멱등성 가드: parsed/ 에 이미 존재하면 skip
+        parsed_check_key = "parsed/" + key[len("raw/"):]
+        try:
+            s3.head_object(Bucket=bucket, Key=parsed_check_key)
+            s3.delete_object(Bucket=bucket, Key=key)
+            logger.info("이미 처리됨, 스킵: %s", key)
+            continue
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "404":
+                raise
+
+        logger.info("임베딩 시작: %s", key)
+
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        data = json.loads(resp["Body"].read().decode("utf-8"))
+
+        embedding_failed = False
         try:
             document = build_document(data["raw_text"], tuple(data.get("tech_stack", [])))
             embedding = embed_text(document)
             data["embedding"] = embedding
         except Exception:
-            logger.exception("임베딩 실패, 임베딩 없이 저장: id=%s", data["external_id"])
+            embedding_failed = True
+            logger.exception(
+                "임베딩 실패, 임베딩 없이 저장: id=%s source=%s",
+                data.get("external_id"), data.get("source"),
+            )
 
-        key = f"parsed/{data['source']}/{data['external_id']}.json"
-        storage.s3.put_object(
-            Bucket=storage.bucket,
-            Key=key,
+        data["embedding_status"] = "failed" if embedding_failed else "ok"
+
+        parsed_key = f"parsed/{data['source']}/{data['external_id']}.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=parsed_key,
             Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
         )
-        logger.info("S3 저장 완료: %s", key)
+        s3.delete_object(Bucket=bucket, Key=key)
+        logger.info("임베딩 완료: %s → %s", key, parsed_key)
 
     return {"statusCode": 200}
 
 
-def _process_image_jd(image_detail: ImageJobDetail) -> JobDetail | None:
-    """이미지 JD 를 로컬 ONNX OCR 로 처리하여 JobDetail 로 변환."""
-    from ocr_client import call_ocr  # noqa: C0415
-    from parser.jobkorea import remove_noise_sections  # noqa: C0415
+# ── Stage 3: DB 로더 (SQS 트리거, S3 parsed/ 이벤트) ──
 
-    raw_text = call_ocr(list(image_detail.images_b64))
-    if not raw_text.strip():
-        logger.info("OCR 결과 비어있음, 스킵: id=%s", image_detail.external_id)
-        return None
 
-    cleaned = remove_noise_sections(raw_text)
-    if not cleaned:
-        logger.info("OCR 노이즈 제거 후 텍스트 없음, 스킵: id=%s", image_detail.external_id)
-        return None
+_pg_storage = None
 
-    logger.info("OCR 완료: id=%s, %d자", image_detail.external_id, len(cleaned))
-    return JobDetail(
-        source=image_detail.source,
-        external_id=image_detail.external_id,
-        url=image_detail.url,
-        company_name=image_detail.company_name,
-        title=image_detail.title,
-        raw_text=cleaned,
-        tech_stack=image_detail.tech_stack,
-        deadline=image_detail.deadline,
-        crawled_at=image_detail.crawled_at,
-        career_level=image_detail.career_level,
+
+def _get_pg_storage():
+    """PgVectorStorage 싱글턴. Lambda 웜 스타트 시 커넥션 재사용."""
+    global _pg_storage
+    if _pg_storage is None:
+        from core.secrets import get_database_url  # noqa: C0415
+        from storage.pgvector import PgVectorStorage  # noqa: C0415
+
+        _pg_storage = PgVectorStorage(dsn=get_database_url())
+    return _pg_storage
+
+
+def db_loader(event, context):
+    """SQS 트리거. S3 PutObject 이벤트 → parsed/ DB 저장 또는 delete-requests/ 만료 삭제."""
+    s3 = boto3.client("s3")
+    pg = _get_pg_storage()
+
+    for record in event["Records"]:
+        envelope = json.loads(record["body"])
+        bucket = envelope["detail"]["bucket"]["name"]
+        key = envelope["detail"]["object"]["key"]
+
+        if key.startswith("parsed/") and key.endswith(".json"):
+            _load_parsed_file(s3, bucket, key, pg)
+        elif key.startswith("delete-requests/") and key.endswith(".json"):
+            _load_delete_request(s3, bucket, key, pg)
+
+    return {"statusCode": 200}
+
+
+def _load_parsed_file(s3, bucket, key, pg):
+    """S3 parsed JSON 1건 → PgVectorStorage.save() → S3 삭제."""
+    resp = s3.get_object(Bucket=bucket, Key=key)
+    data = json.loads(resp["Body"].read().decode("utf-8"))
+
+    detail = JobDetail(
+        source=data["source"],
+        external_id=data["external_id"],
+        url=data["url"],
+        company_name=data["company_name"],
+        title=data["title"],
+        raw_text=data["raw_text"],
+        tech_stack=tuple(data.get("tech_stack", [])),
+        deadline=data.get("deadline", ""),
+        crawled_at=data["crawled_at"],
+        career_level=data.get("career_level", ""),
     )
+    embedding = data.get("embedding")
+    pg.save(detail, embedding=embedding)
+    s3.delete_object(Bucket=bucket, Key=key)
+    logger.info("DB 적재 완료: %s", key)
+
+
+def _load_delete_request(s3, bucket, key, pg):
+    """S3 delete-request JSON 1건 → PgVectorStorage.delete_expired() → S3 삭제."""
+    resp = s3.get_object(Bucket=bucket, Key=key)
+    data = json.loads(resp["Body"].read().decode("utf-8"))
+
+    now_ts = data.get("now_ts")
+    if now_ts is None:
+        now_ts = int(datetime.fromisoformat(data["now_iso"]).timestamp())
+
+    deleted = pg.delete_expired(now_ts)
+    s3.delete_object(Bucket=bucket, Key=key)
+    logger.info("만료 공고 삭제 완료: %d건, key=%s", deleted, key)
+
+
+# ── url-index.json 재구축 (cron) ──
+
+
+def url_index_rebuilder(event, context):
+    """url-index.json 재구축. PostgreSQL 에서 전체 URL 을 조회하여 S3 에 저장."""
+    pg = _get_pg_storage()
+    s3 = boto3.client("s3")
+    bucket = _required_env("S3_BUCKET")
+
+    urls = pg.get_all_urls()
+    body = json.dumps({"urls": sorted(urls)}, ensure_ascii=False)
+    s3.put_object(Bucket=bucket, Key="url-index.json", Body=body.encode("utf-8"))
+
+    logger.info("url-index.json 재구축 완료: %d건", len(urls))
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"url_count": len(urls)}),
+    }

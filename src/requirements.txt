@@ -5,4 +5,4 @@ trafilatura
 onnxruntime
 transformers
 numpy<2
-google-auth
+psycopg2-binary

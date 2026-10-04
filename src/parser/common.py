@@ -1,8 +1,11 @@
 """사이트 무관한 파싱 공용 상수/헬퍼.
 
-여러 크롤러(잡코리아/잡플래닛 등)가 공유하는 정규화 맵을 모은다.
+여러 크롤러가 공유하는 텍스트 정리 함수와 정규화 맵을 모은다.
 사이트별 파서는 이 모듈을 import해서 기술스택 이름을 일관되게 정규화한다.
 """
+import html
+import re
+import unicodedata
 
 # 기술스택 이름 정규화 맵 (소문자 키 → 표준형 값)
 # 잡코리아는 `JAVA`, `Java` 등 대소문자가 섞여 들어오므로 메타데이터 필터 일관성을 위해 통일한다.
@@ -93,3 +96,18 @@ def normalize_tech_name(name: str) -> str:
     """기술스택 이름을 표준형으로 변환. 맵에 없으면 공백만 trim 한 원본을 반환."""
     stripped = name.strip()
     return TECH_NAME_MAP.get(stripped.lower(), stripped)
+
+
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def strip_html(text: str) -> str:
+    """HTML 태그 제거 + 엔티티 디코딩 + 유니코드 정규화.
+
+    NFKC 정규화로 non-breaking space(\\xa0) 등 특수 공백 문자를 일반 공백으로 변환한다.
+    NFKD 는 한글을 자모로 분해하므로 NFKC 를 사용한다.
+    """
+    cleaned = _RE_HTML_TAG.sub("", text)
+    cleaned = html.unescape(cleaned)
+    cleaned = unicodedata.normalize("NFKC", cleaned)
+    return cleaned.strip()
