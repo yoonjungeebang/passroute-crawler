@@ -119,8 +119,13 @@ def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
 def _dispatch_new_listings(
     sqs, queue_url: str, refs: list[JobListingRef], existing_urls: set[str],
 ) -> int:
-    """신규 공고만 JobDetailQueue 로 배치 전송."""
+    """신규 공고만 JobDetailQueue 로 배치 전송.
+
+    SQS send_message_batch 는 부분 실패를 반환할 수 있다(일부 메시지만 전송 실패).
+    실패한 메시지를 로깅하여 부분 장애를 감지한다.
+    """
     new_count = 0
+    failed_count = 0
     batch: list[dict] = []
 
     for ref in refs:
@@ -140,13 +145,28 @@ def _dispatch_new_listings(
         new_count += 1
 
         if len(batch) == SQS_BATCH_SIZE:
-            sqs.send_message_batch(QueueUrl=queue_url, Entries=batch)
+            failed_count += _send_batch(sqs, queue_url, batch)
             batch = []
 
     if batch:
-        sqs.send_message_batch(QueueUrl=queue_url, Entries=batch)
+        failed_count += _send_batch(sqs, queue_url, batch)
+
+    if failed_count:
+        logger.error("SQS 배치 전송 부분 실패: %d건 실패 (전체 %d건)", failed_count, new_count)
 
     return new_count
+
+
+def _send_batch(sqs, queue_url: str, entries: list[dict]) -> int:
+    """SQS 배치 전송 후 부분 실패 건수를 반환한다."""
+    resp = sqs.send_message_batch(QueueUrl=queue_url, Entries=entries)
+    failed = resp.get("Failed", [])
+    for f in failed:
+        logger.warning(
+            "SQS 메시지 전송 실패: Id=%s Code=%s Message=%s",
+            f.get("Id"), f.get("Code"), f.get("Message"),
+        )
+    return len(failed)
 
 
 # ── URL 인덱스 ──
