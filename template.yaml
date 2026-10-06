@@ -675,6 +675,49 @@ Resources:
       OKActions:
         - !Ref DLQAlarmTopic
 
+  # ── 컨슈머 랙 알람 (메인 큐 메시지 체류 시간) ──
+  EmbedQueueLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-embed-queue-consumer-lag
+      AlarmDescription: 임베딩 큐 메시지 체류 시간 10분 초과 (컨슈머 처리 지연)
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt EmbedQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 600
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  JobDetailQueueLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-job-detail-queue-consumer-lag
+      AlarmDescription: 상세 크롤링 큐 메시지 체류 시간 15분 초과 (컨슈머 처리 지연)
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt JobDetailQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 900
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
 Outputs:
   JobListCollectorArn:
     Description: 목록 수집 Lambda ARN

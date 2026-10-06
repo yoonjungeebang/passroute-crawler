@@ -145,6 +145,9 @@ def test_embed_worker_skips_already_processed(mock_boto_client):
     """parsed/ 에 이미 파일이 존재하면 임베딩을 건너뛰고 raw/ 만 삭제한다."""
     mock_s3 = MagicMock()
     mock_boto_client.return_value = mock_s3
+    # get_object로 raw 데이터를 먼저 읽고 parsed_key를 확정한 뒤 head_object로 중복 검사
+    data = _raw_json_data()
+    _mock_s3_get_object(mock_s3, data)
     # head_object 성공 = parsed/ 파일 존재
     mock_s3.head_object.return_value = {}
 
@@ -153,8 +156,8 @@ def test_embed_worker_skips_already_processed(mock_boto_client):
 
     assert result["statusCode"] == 200
 
-    # 임베딩 처리 없이 raw/ 아카이브 후 삭제
-    mock_s3.get_object.assert_not_called()
+    # raw 데이터는 읽지만 임베딩·저장 없이 아카이브 후 삭제
+    mock_s3.get_object.assert_called_once()
     mock_s3.put_object.assert_not_called()
     mock_s3.copy_object.assert_called_once_with(
         Bucket="test-bucket",

@@ -157,15 +157,26 @@ def _dispatch_new_listings(
 
 
 def _send_batch(sqs, queue_url: str, entries: list[dict]) -> int:
-    """SQS 배치 전송 후 부분 실패 건수를 반환한다."""
+    """SQS 배치 전송 후 부분 실패 건수를 반환한다.
+
+    부분 실패한 메시지는 1회 재시도한다. SQS 부분 실패는 일시적 서비스 오류가
+    대부분이므로 즉시 재시도로 복구할 수 있다. 재시도 후에도 실패하면 로깅한다.
+    """
     resp = sqs.send_message_batch(QueueUrl=queue_url, Entries=entries)
     failed = resp.get("Failed", [])
-    for f in failed:
+    if not failed:
+        return 0
+
+    failed_ids = {f["Id"] for f in failed}
+    retry_entries = [e for e in entries if e["Id"] in failed_ids]
+    retry_resp = sqs.send_message_batch(QueueUrl=queue_url, Entries=retry_entries)
+    still_failed = retry_resp.get("Failed", [])
+    for f in still_failed:
         logger.warning(
-            "SQS 메시지 전송 실패: Id=%s Code=%s Message=%s",
+            "SQS 메시지 전송 재시도 후에도 실패: Id=%s Code=%s Message=%s",
             f.get("Id"), f.get("Code"), f.get("Message"),
         )
-    return len(failed)
+    return len(still_failed)
 
 
 # ── URL 인덱스 ──

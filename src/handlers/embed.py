@@ -37,20 +37,20 @@ def embed_worker(event, context):
                 logger.warning("embed_worker: 예상하지 못한 키, 스킵: %s", key)
                 continue
 
-            parsed_check_key = "parsed/" + key[len("raw/"):]
+            logger.info("임베딩 시작: %s", key)
+
+            resp = s3.get_object(Bucket=bucket, Key=key)
+            data = json.loads(resp["Body"].read().decode("utf-8"))
+
+            parsed_key = f"parsed/{data['source']}/{data['external_id']}.json"
             try:
-                s3.head_object(Bucket=bucket, Key=parsed_check_key)
+                s3.head_object(Bucket=bucket, Key=parsed_key)
                 archive_and_delete(s3, bucket, key)
                 logger.info("이미 처리됨, 스킵: %s", key)
                 continue
             except ClientError as e:
                 if e.response["Error"]["Code"] != "404":
                     raise
-
-            logger.info("임베딩 시작: %s", key)
-
-            resp = s3.get_object(Bucket=bucket, Key=key)
-            data = json.loads(resp["Body"].read().decode("utf-8"))
 
             embedding_failed = False
             try:
@@ -69,8 +69,6 @@ def embed_worker(event, context):
                 )
 
             data["embedding_status"] = "failed" if embedding_failed else "ok"
-
-            parsed_key = f"parsed/{data['source']}/{data['external_id']}.json"
             s3.put_object(
                 Bucket=bucket,
                 Key=parsed_key,

@@ -93,7 +93,13 @@ def _load_parsed_file(s3, bucket, key, pg):
 
 def _load_delete_request(s3, bucket, key, pg):
     """S3 delete-request JSON 1건 → PgVectorStorage.delete_expired() → S3 삭제."""
-    resp = s3.get_object(Bucket=bucket, Key=key)
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            logger.info("이미 처리된 삭제 요청, 스킵(SQS 재전달 가능): %s", key)
+            return
+        raise
     data = json.loads(resp["Body"].read().decode("utf-8"))
 
     now_ts = data.get("now_ts")

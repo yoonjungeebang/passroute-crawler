@@ -68,7 +68,6 @@ def job_crawl(event, context):
                 )
             except Exception:
                 logger.exception("검증 실패 알림 전송 실패")
-            breaker.record_failure(e)
             continue
         except (ValueError, TypeError) as e:
             logger.error("데이터 품질 검증 실패: id=%s, %s", ref.external_id, e)
