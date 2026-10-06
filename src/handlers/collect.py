@@ -207,25 +207,30 @@ def url_index_rebuilder(event, context):
 
 
 def news_collector(event, context):
-    """네이버 뉴스 수집 → S3 raw/ 저장. 기존 파이프라인(embed → load)이 후속 처리."""
+    """네이버 뉴스 수집 → S3 raw/ 저장. 기존 파이프라인(embed → load)이 후속 처리.
+
+    중복 확인은 PostgreSQL에서 직접 수행한다.
+    S3 url-index.json은 최종적 일관성만 제공하므로(cron 주기까지 갱신 안 됨),
+    동시 호출이나 연속 호출 시 동일 뉴스를 중복 저장할 수 있다.
+    PostgreSQL PK 룩업은 최신 쓰기를 즉시 반영하므로 이 문제를 방지한다.
+    """
     from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict  # noqa: C0415
     from core.secrets import get_naver_credentials  # noqa: C0415
 
-    s3 = boto3.client("s3")
     storage = make_storage()
-    bucket = storage.bucket
-
-    existing_urls = _load_url_index(s3, bucket)
+    pg = get_pg_storage()
 
     client_id, client_secret = get_naver_credentials()
     collector = NaverNewsCollector(client_id=client_id, client_secret=client_secret)
     items = collector.collect_all()
 
+    candidate_urls = [item.url for item in items]
+    existing_urls = pg.get_existing_urls(candidate_urls)
+
     saved_count = 0
     for item in items:
         if item.url in existing_urls:
             continue
-        existing_urls.add(item.url)
 
         data = news_item_to_detail_dict(item)
         storage.save_raw_dict(data)
@@ -242,23 +247,26 @@ def news_collector(event, context):
 
 
 def blog_collector(event, context):
-    """기술 블로그 RSS 수집 → S3 raw/ 저장. 기존 파이프라인이 후속 처리."""
+    """기술 블로그 RSS 수집 → S3 raw/ 저장. 기존 파이프라인이 후속 처리.
+
+    중복 확인은 PostgreSQL에서 직접 수행한다.
+    이유는 news_collector와 동일: S3 인덱스의 최종적 일관성 문제 방지.
+    """
     from collector.tech_blog import TechBlogCollector, blog_article_to_detail_dict  # noqa: C0415
 
-    s3 = boto3.client("s3")
     storage = make_storage()
-    bucket = storage.bucket
-
-    existing_urls = _load_url_index(s3, bucket)
+    pg = get_pg_storage()
 
     collector = TechBlogCollector()
     articles = collector.collect_all()
+
+    candidate_urls = [article.url for article in articles]
+    existing_urls = pg.get_existing_urls(candidate_urls)
 
     saved_count = 0
     for article in articles:
         if article.url in existing_urls:
             continue
-        existing_urls.add(article.url)
 
         data = blog_article_to_detail_dict(article)
         storage.save_raw_dict(data)
