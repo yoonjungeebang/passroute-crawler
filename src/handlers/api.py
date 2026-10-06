@@ -1,4 +1,5 @@
 """Lambda 핸들러: 검색 API + 기업별 실시간 수집 API (API Gateway 트리거)."""
+import hashlib
 import json
 import logging
 import time
@@ -198,7 +199,7 @@ def company_collect(event, context):
 
         detail = JobDetail(
             source="tech_blog_webkr",
-            external_id=url.rstrip("/").split("/")[-1][:16] or "webkr",
+            external_id=hashlib.sha256(url.encode()).hexdigest()[:16],
             url=url,
             company_name=company,
             title=item["title"],
