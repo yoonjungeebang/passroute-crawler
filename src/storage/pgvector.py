@@ -204,6 +204,7 @@ class PgVectorStorage:
         self.conn.autocommit = False
         try:
             with self.conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '30s'")
                 psycopg2.extras.execute_batch(cur, _UPSERT, params_list)
             self.conn.commit()
         except Exception:
