@@ -87,7 +87,8 @@ class PgVectorStorage:
     def _ensure_alive(self) -> None:
         """커넥션이 끊어졌으면 재연결한다. Lambda 웜 스타트 시 stale 커넥션 방지.
 
-        DB failover 시 첫 재연결이 실패할 수 있으므로 최대 2회 재시도한다.
+        DB failover 시 재연결이 실패할 수 있으므로 지수 백오프로 최대 3회 재시도한다.
+        고정 간격 재시도는 DB 과부하 시 부하를 악화시켜 연쇄 장애를 유발할 수 있다.
         """
         try:
             if self.conn.closed:
@@ -107,8 +108,9 @@ class PgVectorStorage:
                 except psycopg2.OperationalError:
                     if attempt < 2:
                         import time
-                        time.sleep(1)
-                        logger.warning("재접속 실패, 재시도 %d/2", attempt + 1)
+                        delay = (attempt + 1) ** 2  # 1초, 4초
+                        time.sleep(delay)
+                        logger.warning("재접속 실패, %.0f초 후 재시도 %d/2", delay, attempt + 1)
                     else:
                         raise
 
