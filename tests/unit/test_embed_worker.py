@@ -35,7 +35,7 @@ def _raw_json_data(**overrides) -> dict:
         "title": "백엔드",
         "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
-        "deadline": "2026-05-01",
+        "deadline": 1777648000,
         "crawled_at": "2026-04-12T18:00:00+09:00",
         "career_level": "",
     }

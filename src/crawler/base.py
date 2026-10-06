@@ -36,7 +36,7 @@ class JobDetail:
     title: str
     raw_text: str
     tech_stack: tuple[str, ...]
-    deadline: str
+    deadline: int
     crawled_at: str
     career_level: str = ""
 

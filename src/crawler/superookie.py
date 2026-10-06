@@ -116,7 +116,7 @@ class SuperookieCrawler(JobCrawler):
         if not raw_text.strip() or raw_text.strip() == ref.title:
             return None
 
-        deadline = ""
+        deadline = 0
         if not job.get("is_until_recruit", False):
             end_at = job.get("end_at", "") or job.get("close_at", "") or job.get("deadline_at", "")
             if end_at:
@@ -143,9 +143,9 @@ class SuperookieCrawler(JobCrawler):
         return str(level_id)
 
     @staticmethod
-    def _parse_deadline(date_str: str) -> str:
+    def _parse_deadline(date_str: str) -> int:
         try:
             dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-            return str(int(dt.timestamp()))
+            return int(dt.timestamp())
         except (ValueError, TypeError):
-            return ""
+            return 0
