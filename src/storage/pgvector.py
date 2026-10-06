@@ -199,8 +199,16 @@ class PgVectorStorage:
         if not params_list:
             return 0
 
-        with self.conn.cursor() as cur:
-            psycopg2.extras.execute_batch(cur, _UPSERT, params_list)
+        self.conn.autocommit = False
+        try:
+            with self.conn.cursor() as cur:
+                psycopg2.extras.execute_batch(cur, _UPSERT, params_list)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.autocommit = True
         logger.info("배치 저장 완료: %d건", len(params_list))
         return len(params_list)
 

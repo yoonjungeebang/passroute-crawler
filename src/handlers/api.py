@@ -44,6 +44,7 @@ def search_api(event, context):
 
     t0 = time.time()
     pg = get_pg_storage()
+    pg._ensure_alive()
     job_results = search_jobs(pg.conn, query_embedding, limit=limit, company=company)
     metrics.put_duration("DbQueryDuration", t0)
     metrics.put_count("JobResultCount", len(job_results))
@@ -135,7 +136,6 @@ def company_collect(event, context):
             "company_name": item.company_name,
             "description": item.description,
         })
-    pg.save_batch(news_batch)
 
     metrics.put_duration("NewsCollectDuration", t0)
     metrics.put_count("NewsCount", len(news_items))
@@ -213,11 +213,12 @@ def company_collect(event, context):
             career_level="",
         )
         blog_batch.append((detail, None, "ok"))
-    pg.save_batch(blog_batch)
 
     metrics.put_duration("BlogCollectDuration", t0)
     metrics.put_count("BlogArticleCount", len(tech_articles))
     logger.info("기술 블로그 수집 완료: company=%s, %d건", company, len(tech_articles))
+
+    pg.save_batch(news_batch + blog_batch)
 
     metrics.put_duration("TotalDuration", t_total)
     metrics.flush()
