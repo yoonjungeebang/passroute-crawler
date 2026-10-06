@@ -7,6 +7,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from core.circuit_breaker import get_breaker
 from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
@@ -29,14 +30,16 @@ def _make_session(api_key_id: str, api_key: str) -> requests.Session:
 
 def search_news(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
     """네이버 API HUB 뉴스 검색 실시간 호출."""
+    breaker = get_breaker("naver_search_api")
     try:
-        resp = session.get(_NEWS_URL, params={
-            "query": query,
-            "display": display,
-            "sort": "date",
-        }, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
+        with breaker:
+            resp = session.get(_NEWS_URL, params={
+                "query": query,
+                "display": display,
+                "sort": "date",
+            }, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
     except Exception:
         logger.exception("네이버 뉴스 검색 실패: query=%s", query)
         return []
@@ -55,13 +58,15 @@ def search_news(session: requests.Session, query: str, *, display: int = 10) -> 
 
 def search_webkr(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
     """네이버 API HUB 웹문서 검색 실시간 호출. 기술 블로그 등 웹 문서를 검색한다."""
+    breaker = get_breaker("naver_search_api")
     try:
-        resp = session.get(_WEBKR_URL, params={
-            "query": query,
-            "display": display,
-        }, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
+        with breaker:
+            resp = session.get(_WEBKR_URL, params={
+                "query": query,
+                "display": display,
+            }, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
     except Exception:
         logger.exception("네이버 웹문서 검색 실패: query=%s", query)
         return []

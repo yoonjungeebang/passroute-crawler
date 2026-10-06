@@ -11,6 +11,7 @@ from crawler.base import JobDetail
 logger = logging.getLogger(__name__)
 
 _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
+_CREATE_EXTENSION_TRGM = "CREATE EXTENSION IF NOT EXISTS pg_trgm"
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS job_descriptions (
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS job_descriptions (
     title       TEXT NOT NULL,
     document    TEXT NOT NULL,
     embedding   vector(768),
+    embedding_status TEXT NOT NULL DEFAULT 'ok',
     deadline    BIGINT NOT NULL DEFAULT 0,
     crawled_at  TEXT NOT NULL,
     tech_stack  TEXT NOT NULL DEFAULT '',
@@ -44,24 +46,30 @@ CREATE INDEX IF NOT EXISTS idx_job_descriptions_deadline
 ON job_descriptions (deadline) WHERE deadline > 0
 """
 
+_CREATE_INDEX_COMPANY_TRGM = """
+CREATE INDEX IF NOT EXISTS idx_job_descriptions_company_trgm
+ON job_descriptions USING gin (company_name gin_trgm_ops)
+"""
+
 _UPSERT = """
 INSERT INTO job_descriptions
-    (url, source, external_id, company_name, title, document, embedding, deadline, crawled_at, tech_stack, career_level, updated_at)
+    (url, source, external_id, company_name, title, document, embedding, embedding_status, deadline, crawled_at, tech_stack, career_level, updated_at)
 VALUES
     (%(url)s, %(source)s, %(external_id)s, %(company_name)s, %(title)s,
-     %(document)s, %(embedding)s, %(deadline)s, %(crawled_at)s, %(tech_stack)s, %(career_level)s, NOW())
+     %(document)s, %(embedding)s, %(embedding_status)s, %(deadline)s, %(crawled_at)s, %(tech_stack)s, %(career_level)s, NOW())
 ON CONFLICT (url) DO UPDATE SET
-    source       = EXCLUDED.source,
-    external_id  = EXCLUDED.external_id,
-    company_name = EXCLUDED.company_name,
-    title        = EXCLUDED.title,
-    document     = EXCLUDED.document,
-    embedding    = EXCLUDED.embedding,
-    deadline     = EXCLUDED.deadline,
-    crawled_at   = EXCLUDED.crawled_at,
-    tech_stack   = EXCLUDED.tech_stack,
-    career_level = EXCLUDED.career_level,
-    updated_at   = NOW()
+    source           = EXCLUDED.source,
+    external_id      = EXCLUDED.external_id,
+    company_name     = EXCLUDED.company_name,
+    title            = EXCLUDED.title,
+    document         = EXCLUDED.document,
+    embedding        = EXCLUDED.embedding,
+    embedding_status = EXCLUDED.embedding_status,
+    deadline         = EXCLUDED.deadline,
+    crawled_at       = EXCLUDED.crawled_at,
+    tech_stack       = EXCLUDED.tech_stack,
+    career_level     = EXCLUDED.career_level,
+    updated_at       = NOW()
 """
 
 
@@ -96,13 +104,16 @@ class PgVectorStorage:
     def _ensure_schema(self) -> None:
         with self.conn.cursor() as cur:
             cur.execute(_CREATE_EXTENSION)
+            cur.execute(_CREATE_EXTENSION_TRGM)
             cur.execute(_CREATE_TABLE)
             cur.execute("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+            cur.execute("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS embedding_status TEXT NOT NULL DEFAULT 'ok'")
             cur.execute(_CREATE_INDEX)
             cur.execute(_CREATE_INDEX_SOURCE)
             cur.execute(_CREATE_INDEX_DEADLINE)
+            cur.execute(_CREATE_INDEX_COMPANY_TRGM)
 
-    def save(self, detail: JobDetail, *, embedding: list[float] | None = None) -> None:
+    def save(self, detail: JobDetail, *, embedding: list[float] | None = None, embedding_status: str = "ok") -> None:
         """사전 계산된 embedding 과 document/metadata 를 PostgreSQL 에 저장."""
         self._ensure_alive()
 
@@ -126,6 +137,7 @@ class PgVectorStorage:
             "title": detail.title,
             "document": document,
             "embedding": _to_pg_vector(embedding),
+            "embedding_status": embedding_status,
             "deadline": _deadline_to_ts(detail.deadline),
             "crawled_at": detail.crawled_at,
             "tech_stack": _tech_stack_to_str(detail.tech_stack),
@@ -152,12 +164,18 @@ class PgVectorStorage:
         return deleted
 
     def get_all_urls(self) -> set[str]:
-        """저장된 모든 공고 URL 을 조회."""
+        """저장된 모든 공고 URL 을 조회. fetchmany 로 DB→Python 전송을 배치 처리."""
         self._ensure_alive()
 
+        urls: set[str] = set()
         with self.conn.cursor() as cur:
             cur.execute("SELECT url FROM job_descriptions")
-            return {row[0] for row in cur.fetchall()}
+            while True:
+                batch = cur.fetchmany(2000)
+                if not batch:
+                    break
+                urls.update(row[0] for row in batch)
+        return urls
 
     def close(self) -> None:
         self.conn.close()

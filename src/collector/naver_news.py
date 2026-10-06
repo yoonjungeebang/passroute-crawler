@@ -20,6 +20,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from core import KST
+from core.circuit_breaker import CircuitOpenError, get_breaker
 from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,7 @@ class NaverNewsCollector:
             "X-NCP-APIGW-API-KEY-ID": self.client_id,
             "X-NCP-APIGW-API-KEY": self.client_secret,
         })
+        self._breaker = get_breaker("naver_news_api")
 
     def _call_api(self, query: str, display: int = MAX_DISPLAY, start: int = 1) -> dict:
         """네이버 뉴스 검색 API 호출."""
@@ -161,16 +163,17 @@ class NaverNewsCollector:
             "start": start,
             "sort": "date",
         }
-        resp = self.session.get(
-            NAVER_NEWS_API_URL, params=params, timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "errorCode" in data:
-            raise RuntimeError(
-                f"네이버 API 에러: {data.get('errorCode')} - {data.get('errorMessage', '')}"
+        with self._breaker:
+            resp = self.session.get(
+                NAVER_NEWS_API_URL, params=params, timeout=10,
             )
-        return data
+            resp.raise_for_status()
+            data = resp.json()
+            if "errorCode" in data:
+                raise RuntimeError(
+                    f"네이버 API 에러: {data.get('errorCode')} - {data.get('errorMessage', '')}"
+                )
+            return data
 
     def _search_company(self, company: str) -> list[NewsItem]:
         """한 기업에 대해 검색어 접미사별로 뉴스를 수집한다."""
@@ -182,6 +185,8 @@ class NaverNewsCollector:
             query = f"{company} {suffix}"
             try:
                 data = self._call_api(query)
+            except CircuitOpenError:
+                raise
             except Exception:
                 logger.exception("API 호출 실패: query=%s", query)
                 continue
@@ -219,7 +224,12 @@ class NaverNewsCollector:
         global_seen_urls: set[str] = set()
 
         for company in self.companies:
-            items = self._search_company(company)
+            try:
+                items = self._search_company(company)
+            except CircuitOpenError:
+                logger.warning("서킷 OPEN: 나머지 기업 수집 스킵")
+                break
+
             for item in items:
                 if item.url in global_seen_urls:
                     continue

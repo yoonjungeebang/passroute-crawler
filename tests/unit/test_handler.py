@@ -123,20 +123,20 @@ def test_job_list_collector_fails_fast_when_queue_url_missing(
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
 @patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("app._get_pg_storage")
 @patch("app.get_crawler")
 def test_source_collect_worker_dispatches_new_listings(
-    mock_get_crawler, mock_storage_cls, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
     """신규 공고만 JobDetailQueue 로 전송되어야 한다."""
     mock_sqs = MagicMock()
     mock_boto_client.return_value = mock_sqs
 
-    mock_storage = MagicMock()
-    mock_storage.get_all_urls.return_value = {
+    mock_pg = MagicMock()
+    mock_pg.get_all_urls.return_value = {
         "https://www.jumpit.co.kr/position/111",
     }
-    mock_storage_cls.return_value = mock_storage
+    mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
     mock_robots.check_and_alert.return_value = True
@@ -159,16 +159,16 @@ def test_source_collect_worker_dispatches_new_listings(
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
 @patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("app._get_pg_storage")
 @patch("app.get_crawler")
 def test_source_collect_worker_skips_blocked_source(
-    mock_get_crawler, mock_storage_cls, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
     """robots.txt 차단 시 해당 소스를 스킵한다."""
     mock_boto_client.return_value = MagicMock()
-    mock_storage = MagicMock()
-    mock_storage.get_all_urls.return_value = set()
-    mock_storage_cls.return_value = mock_storage
+    mock_pg = MagicMock()
+    mock_pg.get_all_urls.return_value = set()
+    mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
     mock_robots.check_and_alert.return_value = False
@@ -186,16 +186,16 @@ def test_source_collect_worker_skips_blocked_source(
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
 @patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("app._get_pg_storage")
 @patch("app.get_crawler")
 def test_source_collect_worker_raises_on_crawl_failure(
-    mock_get_crawler, mock_storage_cls, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
     """크롤링 실패 시 SQS 재시도를 위해 예외가 전파되어야 한다."""
     mock_boto_client.return_value = MagicMock()
-    mock_storage = MagicMock()
-    mock_storage.get_all_urls.return_value = set()
-    mock_storage_cls.return_value = mock_storage
+    mock_pg = MagicMock()
+    mock_pg.get_all_urls.return_value = set()
+    mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
     mock_robots.check_and_alert.return_value = True

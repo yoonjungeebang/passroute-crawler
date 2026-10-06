@@ -18,13 +18,31 @@ import boto3
 from botocore.exceptions import ClientError
 
 from core import KST
+from core.circuit_breaker import CircuitOpenError, get_breaker
 from crawler.base import JobDetail, JobListingRef
 from crawler.registry import get_crawler, iter_sources
-from storage.s3 import S3Storage
+from crawler.validation import CrawlValidationError
+from storage.s3 import S3Storage, validate_raw_schema
 
 logger = logging.getLogger(__name__)
 
 SQS_BATCH_SIZE = 10
+
+
+def _archive_and_delete(s3, bucket: str, key: str) -> None:
+    """S3 객체를 archive/ 프리픽스로 복사한 뒤 원본을 삭제한다.
+
+    문제 발생 시 archive/ 에서 원본 데이터를 확인하거나 재처리할 수 있다.
+    archive/ 객체는 S3 Lifecycle 규칙에 의해 14일 후 자동 만료된다.
+    """
+    archive_key = f"archive/{key}"
+    s3.copy_object(
+        Bucket=bucket,
+        CopySource={"Bucket": bucket, "Key": key},
+        Key=archive_key,
+    )
+    s3.delete_object(Bucket=bucket, Key=key)
+    logger.info("아카이브 완료: %s → %s", key, archive_key)
 
 
 def _required_env(name: str) -> str:
@@ -74,7 +92,7 @@ def source_collect_worker(event, context):
     from crawler.robots_check import RobotsChecker  # noqa: C0415
 
     sqs = boto3.client("sqs")
-    storage = _make_storage()
+    pg = _get_pg_storage()
     queue_url = _required_env("JOB_DETAIL_QUEUE_URL")
     robots_checker = RobotsChecker()
 
@@ -82,7 +100,7 @@ def source_collect_worker(event, context):
         message = json.loads(record["body"])
         source = message["source"]
 
-        existing_urls = storage.get_all_urls()
+        existing_urls = pg.get_all_urls()
         crawler = get_crawler(source)
 
         # robots.txt 사전 확인
@@ -97,10 +115,43 @@ def source_collect_worker(event, context):
             logger.exception("source=%s 목록 수집 실패", source)
             raise
 
+        _check_listing_quality(source, refs)
         new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
         logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
 
     return {"statusCode": 200}
+
+
+def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
+    """목록 수집 결과의 품질 메트릭을 검사하고, 이상 시 #monitor 알림."""
+    total = len(refs)
+    if total == 0:
+        return
+
+    empty_title = sum(1 for r in refs if not r.title.strip())
+    empty_company = sum(1 for r in refs if not r.company_name.strip())
+
+    alerts: list[str] = []
+    if empty_title / total > 0.3:
+        alerts.append(f"제목 비어있음: {empty_title}/{total}건 ({empty_title / total:.0%})")
+    if empty_company / total > 0.3:
+        alerts.append(f"회사명 비어있음: {empty_company}/{total}건 ({empty_company / total:.0%})")
+
+    if not alerts:
+        return
+
+    logger.warning("source=%s 품질 열화 감지: %s", source, alerts)
+    try:
+        from core.notify import send_monitor_alert  # noqa: C0415
+        send_monitor_alert(
+            title=f"\U0001f4c9 {source} 목록 수집 품질 열화",
+            description=(
+                f"**{source}** 목록 수집 {total}건 중 품질 이상 감지:\n\n"
+                + "\n".join(f"- {a}" for a in alerts)
+            ),
+        )
+    except Exception:
+        logger.exception("품질 열화 알림 전송 실패")
 
 
 def _dispatch_new_listings(
@@ -141,6 +192,11 @@ def _dispatch_new_listings(
 
 def job_crawl(event, context):
     """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장."""
+    from core.metrics import MetricsLogger  # noqa: C0415
+
+    t_total = time.time()
+    metrics = MetricsLogger(function_name="job_crawl")
+    crawl_count = 0
     storage = _make_storage()
 
     for record in event["Records"]:
@@ -156,19 +212,59 @@ def job_crawl(event, context):
         crawler = get_crawler(ref.source)
         logger.info("상세 크롤링: source=%s id=%s (%s)", ref.source, ref.external_id, ref.company_name)
 
+        breaker = get_breaker(ref.source)
         try:
-            detail = crawler.fetch_detail(ref)
+            with breaker:
+                detail = crawler.fetch_detail(ref)
             if detail is None:
                 logger.info("상세 정보 없음, 스킵: id=%s", ref.external_id)
                 continue
 
             storage.save_raw(detail)
+            crawl_count += 1
+        except CrawlValidationError as e:
+            logger.error("크롤링 검증 실패: %s", e)
+            try:
+                from core.notify import send_monitor_alert  # noqa: C0415
+                send_monitor_alert(
+                    title=f"\u26a0\ufe0f {ref.source} API 구조 변경 감지",
+                    description=(
+                        f"**{ref.source}** API 응답 구조가 예상과 다릅니다.\n\n"
+                        f"**공고**: `{ref.external_id}`\n"
+                        f"**오류**: {e}"
+                    ),
+                    color=0xFF4444,
+                )
+            except Exception:
+                logger.exception("검증 실패 알림 전송 실패")
+            breaker.record_failure(e)
+            continue
+        except (ValueError, TypeError) as e:
+            logger.error("데이터 품질 검증 실패: id=%s, %s", ref.external_id, e)
+            try:
+                from core.notify import send_monitor_alert  # noqa: C0415
+                send_monitor_alert(
+                    title=f"\u26a0\ufe0f {ref.source} 데이터 품질 문제",
+                    description=(
+                        f"**공고**: `{ref.external_id}`\n"
+                        f"**오류**: {e}"
+                    ),
+                )
+            except Exception:
+                logger.exception("품질 검증 알림 전송 실패")
+            continue
+        except CircuitOpenError:
+            logger.warning("서킷 OPEN, 상세 크롤링 스킵: source=%s id=%s", ref.source, ref.external_id)
+            continue
         except Exception:
             logger.exception("상세 크롤링 실패: id=%s", ref.external_id)
             raise
 
         time.sleep(random.uniform(1.0, 2.5))
 
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.put_count("CrawledCount", crawl_count)
+    metrics.flush()
     return {"statusCode": 200}
 
 
@@ -178,7 +274,12 @@ def job_crawl(event, context):
 def embed_worker(event, context):
     """SQS 트리거. S3 raw/ PutObject 이벤트 → 임베딩 → S3(parsed/) 저장."""
     from core.embedding import build_document, embed_text  # noqa: C0415
+    from core.metrics import MetricsLogger  # noqa: C0415
 
+    t_total = time.time()
+    metrics = MetricsLogger(function_name="embed_worker")
+    embed_count = 0
+    embed_fail_count = 0
     s3 = boto3.client("s3")
 
     for record in event["Records"]:
@@ -194,7 +295,7 @@ def embed_worker(event, context):
         parsed_check_key = "parsed/" + key[len("raw/"):]
         try:
             s3.head_object(Bucket=bucket, Key=parsed_check_key)
-            s3.delete_object(Bucket=bucket, Key=key)
+            _archive_and_delete(s3, bucket, key)
             logger.info("이미 처리됨, 스킵: %s", key)
             continue
         except ClientError as e:
@@ -208,11 +309,15 @@ def embed_worker(event, context):
 
         embedding_failed = False
         try:
+            t0 = time.time()
             document = build_document(data["raw_text"], tuple(data.get("tech_stack", [])))
             embedding = embed_text(document)
+            metrics.put_duration("EmbeddingDuration", t0)
             data["embedding"] = embedding
+            embed_count += 1
         except Exception:
             embedding_failed = True
+            embed_fail_count += 1
             logger.exception(
                 "임베딩 실패, 임베딩 없이 저장: id=%s source=%s",
                 data.get("external_id"), data.get("source"),
@@ -226,9 +331,13 @@ def embed_worker(event, context):
             Key=parsed_key,
             Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
         )
-        s3.delete_object(Bucket=bucket, Key=key)
+        _archive_and_delete(s3, bucket, key)
         logger.info("임베딩 완료: %s → %s", key, parsed_key)
 
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.put_count("EmbeddedCount", embed_count)
+    metrics.put_count("EmbedFailCount", embed_fail_count)
+    metrics.flush()
     return {"statusCode": 200}
 
 
@@ -251,6 +360,11 @@ def _get_pg_storage():
 
 def db_loader(event, context):
     """SQS 트리거. S3 PutObject 이벤트 → parsed/ DB 저장 또는 delete-requests/ 만료 삭제."""
+    from core.metrics import MetricsLogger  # noqa: C0415
+
+    t_total = time.time()
+    metrics = MetricsLogger(function_name="db_loader")
+    load_count = 0
     s3 = boto3.client("s3")
     pg = _get_pg_storage()
 
@@ -260,10 +374,16 @@ def db_loader(event, context):
         key = envelope["detail"]["object"]["key"]
 
         if key.startswith("parsed/") and key.endswith(".json"):
+            t0 = time.time()
             _load_parsed_file(s3, bucket, key, pg)
+            metrics.put_duration("DbWriteDuration", t0)
+            load_count += 1
         elif key.startswith("delete-requests/") and key.endswith(".json"):
             _load_delete_request(s3, bucket, key, pg)
 
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.put_count("LoadedCount", load_count)
+    metrics.flush()
     return {"statusCode": 200}
 
 
@@ -271,6 +391,12 @@ def _load_parsed_file(s3, bucket, key, pg):
     """S3 parsed JSON 1건 → PgVectorStorage.save() → S3 삭제."""
     resp = s3.get_object(Bucket=bucket, Key=key)
     data = json.loads(resp["Body"].read().decode("utf-8"))
+
+    schema_errors = validate_raw_schema(data)
+    if schema_errors:
+        logger.error("DB 적재 전 스키마 검증 실패: key=%s, errors=%s", key, schema_errors)
+        _archive_and_delete(s3, bucket, key)
+        return
 
     detail = JobDetail(
         source=data["source"],
@@ -285,8 +411,9 @@ def _load_parsed_file(s3, bucket, key, pg):
         career_level=data.get("career_level", ""),
     )
     embedding = data.get("embedding")
-    pg.save(detail, embedding=embedding)
-    s3.delete_object(Bucket=bucket, Key=key)
+    embedding_status = data.get("embedding_status", "ok")
+    pg.save(detail, embedding=embedding, embedding_status=embedding_status)
+    _archive_and_delete(s3, bucket, key)
     logger.info("DB 적재 완료: %s", key)
 
 
@@ -300,68 +427,80 @@ def _load_delete_request(s3, bucket, key, pg):
         now_ts = int(datetime.fromisoformat(data["now_iso"]).timestamp())
 
     deleted = pg.delete_expired(now_ts)
-    s3.delete_object(Bucket=bucket, Key=key)
+    _archive_and_delete(s3, bucket, key)
     logger.info("만료 공고 삭제 완료: %d건, key=%s", deleted, key)
-
-
-# ── url-index.json 재구축 (cron) ──
-
-
-def url_index_rebuilder(event, context):
-    """url-index.json 재구축. PostgreSQL 에서 전체 URL 을 조회하여 S3 에 저장."""
-    pg = _get_pg_storage()
-    s3 = boto3.client("s3")
-    bucket = _required_env("S3_BUCKET")
-
-    urls = pg.get_all_urls()
-    body = json.dumps({"urls": sorted(urls)}, ensure_ascii=False)
-    s3.put_object(Bucket=bucket, Key="url-index.json", Body=body.encode("utf-8"))
-
-    logger.info("url-index.json 재구축 완료: %d건", len(urls))
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"url_count": len(urls)}),
-    }
 
 
 # ── Phase 4: 검색 API (API Gateway 트리거) ──
 
 
+def _api_error(status: int, message: str) -> dict:
+    """API Gateway 에러 응답을 생성한다."""
+    return {
+        "statusCode": status,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"error": message}),
+    }
+
+
+def _safe_int(value: str, *, default: int, min_val: int = 1, max_val: int = 100) -> int:
+    """문자열을 정수로 변환한다. 실패 시 default, 범위 초과 시 클램핑."""
+    try:
+        n = int(value)
+    except (ValueError, TypeError):
+        return default
+    return max(min_val, min(n, max_val))
+
+
+_MAX_QUERY_LENGTH = 200
+_MAX_COMPANY_LENGTH = 50
+
+
 def search_api(event, context):
     """검색 API. 채용공고 유사도 검색 + 네이버 뉴스 실시간 검색."""
     from core.embedding import embed_text  # noqa: C0415
+    from core.metrics import MetricsLogger  # noqa: C0415
     from core.secrets import get_naver_credentials  # noqa: C0415
     from search.naver_realtime import _make_session, search_news  # noqa: C0415
     from search.pgvector_search import search_jobs  # noqa: C0415
 
+    t_total = time.time()
+    metrics = MetricsLogger(function_name="search_api")
+
     params = event.get("queryStringParameters") or {}
-    query = params.get("q", "").strip()
-    company = params.get("company", "").strip() or None
-    limit = min(int(params.get("limit", "10")), 30)
+    query = params.get("q", "").strip()[:_MAX_QUERY_LENGTH]
+    company = params.get("company", "").strip()[:_MAX_COMPANY_LENGTH] or None
+    limit = _safe_int(params.get("limit", "10"), default=10, min_val=1, max_val=30)
 
     if not query:
-        return {
-            "statusCode": 400,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": "q 파라미터가 필요합니다."}),
-        }
+        return _api_error(400, "q 파라미터가 필요합니다.")
 
     # 1. 쿼리 임베딩
+    t0 = time.time()
     query_embedding = embed_text(query)
+    metrics.put_duration("EmbeddingDuration", t0)
 
     # 2. pgvector 채용공고 유사도 검색
+    t0 = time.time()
     pg = _get_pg_storage()
     job_results = search_jobs(pg.conn, query_embedding, limit=limit, company=company)
+    metrics.put_duration("DbQueryDuration", t0)
+    metrics.put_count("JobResultCount", len(job_results))
 
     for job in job_results:
         job["similarity"] = round(float(job["similarity"]), 4)
 
     # 3. 네이버 뉴스 실시간 검색
+    t0 = time.time()
     search_query = f"{company} {query}" if company else query
     client_id, client_secret = get_naver_credentials()
     naver_session = _make_session(client_id, client_secret)
-
     news_results = search_news(naver_session, f"{search_query} 기술", display=5)
+    metrics.put_duration("NewsApiDuration", t0)
+    metrics.put_count("NewsResultCount", len(news_results))
+
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.flush()
 
     return {
         "statusCode": 200,
@@ -390,24 +529,25 @@ def company_collect(event, context):
         fetch_content_from_rss,
         find_rss_feed_url,
     )
+    from core.metrics import MetricsLogger  # noqa: C0415
     from core.secrets import get_naver_credentials  # noqa: C0415
     from crawler.robots_check import RobotsChecker  # noqa: C0415
     from search.naver_realtime import _make_session, filter_webkr_results, search_webkr  # noqa: C0415
 
+    t_total = time.time()
+    metrics = MetricsLogger(function_name="company_collect")
+
     params = event.get("queryStringParameters") or {}
-    company = params.get("company", "").strip()
+    company = params.get("company", "").strip()[:_MAX_COMPANY_LENGTH]
 
     if not company:
-        return {
-            "statusCode": 400,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": "company 파라미터가 필요합니다."}),
-        }
+        return _api_error(400, "company 파라미터가 필요합니다.")
 
     pg = _get_pg_storage()
     news_saved = []
 
     # 1. 뉴스 수집: 해당 기업만 네이버 뉴스 API 호출
+    t0 = time.time()
     client_id, client_secret = get_naver_credentials()
     news_collector_inst = NaverNewsCollector(
         client_id=client_id,
@@ -438,12 +578,16 @@ def company_collect(event, context):
             "description": item.description,
         })
 
+    metrics.put_duration("NewsCollectDuration", t0)
+    metrics.put_count("NewsCount", len(news_items))
     logger.info("뉴스 수집: company=%s, %d건", company, len(news_items))
 
     # 2. 기술 블로그 수집: 웹문서 검색 → RSS 본문 우선 → HTML 크롤링 폴백
+    t0 = time.time()
+    _MAX_KEYWORDS = 10
     keywords_param = params.get("keywords", "").strip()
-    keyword_list = [kw.strip() for kw in keywords_param.split(",") if kw.strip()] if keywords_param else []
-    max_crawl = min(int(params.get("max_articles", "10")), 20)
+    keyword_list = [kw.strip()[:50] for kw in keywords_param.split(",") if kw.strip()][:_MAX_KEYWORDS]
+    max_crawl = _safe_int(params.get("max_articles", "10"), default=10, min_val=1, max_val=20)
 
     naver_session = _make_session(client_id, client_secret)
     raw_results: list[dict] = []
@@ -512,7 +656,12 @@ def company_collect(event, context):
         )
         pg.save(detail)
 
+    metrics.put_duration("BlogCollectDuration", t0)
+    metrics.put_count("BlogArticleCount", len(tech_articles))
     logger.info("기술 블로그 수집 완료: company=%s, %d건", company, len(tech_articles))
+
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.flush()
 
     return {
         "statusCode": 200,

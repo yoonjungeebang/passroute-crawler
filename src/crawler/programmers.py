@@ -14,6 +14,7 @@ from crawler.base import (
     JobListingRef,
     make_crawler_session,
 )
+from crawler.validation import CrawlValidationError, require_keys, require_non_empty
 from parser.common import normalize_tech_name
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,12 @@ class ProgrammersCrawler(JobCrawler):
             logger.exception("프로그래머스 상세 요청 실패: id=%s", job_id)
             return None
 
+        ctx = f"programmers detail {job_id}"
+        require_keys(data, ["jobPosition"], context=ctx)
         job = data.get("jobPosition") or data
+        require_keys(job, ["title"], context=ctx)
+        require_non_empty(job.get("title"), "title", context=ctx)
+
         parts = [job.get("title") or ref.title]
 
         description = job.get("description", "")

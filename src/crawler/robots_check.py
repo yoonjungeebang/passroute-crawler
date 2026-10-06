@@ -73,24 +73,19 @@ class RobotsChecker:
         return allowed
 
     def _send_block_alert(self, source: str, url: str) -> None:
-        """차단 감지 시 Discord 웹훅으로 알림 전송."""
+        """차단 감지 시 Discord #monitor 채널로 알림 전송."""
         try:
-            from core.secrets import get_discord_webhook_url  # noqa: C0415
-            from core.notify import _send_discord  # noqa: C0415
+            from core.notify import send_monitor_alert  # noqa: C0415
 
-            webhook_url = get_discord_webhook_url()
-            payload = {
-                "embeds": [{
-                    "title": f"\U0001f6ab robots.txt 차단 감지: {source}",
-                    "description": (
-                        f"**{source}** 사이트가 크롤링을 차단했습니다.\n"
-                        f"해당 소스는 자동으로 스킵됩니다.\n\n"
-                        f"URL: `{url}`"
-                    ),
-                    "color": 0xFF4444,
-                }],
-            }
-            _send_discord(webhook_url, payload)
+            send_monitor_alert(
+                title=f"\U0001f6ab robots.txt 차단 감지: {source}",
+                description=(
+                    f"**{source}** 사이트가 크롤링을 차단했습니다.\n"
+                    f"해당 소스는 자동으로 스킵됩니다.\n\n"
+                    f"URL: `{url}`"
+                ),
+                color=0xFF4444,
+            )
         except Exception:
             logger.exception("robots.txt 차단 Discord 알림 전송 실패")
 
