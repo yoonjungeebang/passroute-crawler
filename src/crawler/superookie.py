@@ -48,10 +48,10 @@ class SuperookieCrawler(JobCrawler):
         params = {
             "page": page,
             "per_page": 20,
-            "access_token": _get_access_token(),
         }
+        headers = {"Authorization": f"Bearer {_get_access_token()}"}
         try:
-            resp = self.session.get(f"{_API_BASE}/jobs", params=params, timeout=15)
+            resp = self.session.get(f"{_API_BASE}/jobs", params=params, headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -84,9 +84,9 @@ class SuperookieCrawler(JobCrawler):
     def fetch_detail(self, ref: JobListingRef) -> JobDetail | None:
         """슈퍼루키 채용공고 상세 — 목록 API 에 상세 정보가 포함되어 있으므로 재호출."""
         job_id = ref.external_id.replace("superookie_", "")
-        params = {"access_token": _get_access_token()}
+        headers = {"Authorization": f"Bearer {_get_access_token()}"}
         try:
-            resp = self.session.get(f"{_API_BASE}/jobs/{job_id}", params=params, timeout=15)
+            resp = self.session.get(f"{_API_BASE}/jobs/{job_id}", headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:

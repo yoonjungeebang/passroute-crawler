@@ -163,13 +163,16 @@ class PgVectorStorage:
             logger.info("마감 공고 %d건 삭제", deleted)
         return deleted
 
-    def get_all_urls(self) -> set[str]:
-        """저장된 모든 공고 URL 을 조회. fetchmany 로 DB→Python 전송을 배치 처리."""
+    def get_all_urls(self, source: str | None = None) -> set[str]:
+        """저장된 공고 URL 을 조회. source 지정 시 해당 소스만 조회."""
         self._ensure_alive()
 
         urls: set[str] = set()
         with self.conn.cursor() as cur:
-            cur.execute("SELECT url FROM job_descriptions")
+            if source:
+                cur.execute("SELECT url FROM job_descriptions WHERE source = %s", (source,))
+            else:
+                cur.execute("SELECT url FROM job_descriptions")
             while True:
                 batch = cur.fetchmany(2000)
                 if not batch:
@@ -178,7 +181,16 @@ class PgVectorStorage:
         return urls
 
     def close(self) -> None:
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def _tech_stack_to_str(tech_stack: Iterable[str]) -> str:

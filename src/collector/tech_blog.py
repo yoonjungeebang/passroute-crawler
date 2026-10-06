@@ -290,20 +290,39 @@ _JOB_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+_SHORT_KW_PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {}
+_LONG_KW_LIST: dict[str, list[str]] = {}
+
+for _cat, _keywords in _JOB_CATEGORY_KEYWORDS.items():
+    short = []
+    long = []
+    for kw in _keywords:
+        kw_lower = kw.lower()
+        if len(kw_lower) <= 3:
+            short.append((re.compile(rf"\b{re.escape(kw_lower)}\b"), kw_lower))
+        else:
+            long.append(kw_lower)
+    _SHORT_KW_PATTERNS[_cat] = short
+    _LONG_KW_LIST[_cat] = long
+
+
 def _classify_job_categories(text: str) -> list[str]:
     """텍스트에서 키워드를 찾아 관련 직무 카테고리를 반환한다."""
     text_lower = text.lower()
     categories: list[str] = []
-    for category, keywords in _JOB_CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            kw_lower = kw.lower()
-            if len(kw_lower) <= 3:
-                if re.search(rf"\b{re.escape(kw_lower)}\b", text_lower):
-                    categories.append(category)
-                    break
-            elif kw_lower in text_lower:
-                categories.append(category)
+    for category in _JOB_CATEGORY_KEYWORDS:
+        found = False
+        for pattern, _ in _SHORT_KW_PATTERNS[category]:
+            if pattern.search(text_lower):
+                found = True
                 break
+        if not found:
+            for kw_lower in _LONG_KW_LIST[category]:
+                if kw_lower in text_lower:
+                    found = True
+                    break
+        if found:
+            categories.append(category)
     return categories
 
 

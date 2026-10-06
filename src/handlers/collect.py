@@ -54,12 +54,14 @@ def source_collect_worker(event, context):
     queue_url = required_env("JOB_DETAIL_QUEUE_URL")
     robots_checker = RobotsChecker()
 
+    failures: list[dict] = []
+
     for record in event["Records"]:
         message = json.loads(record["body"])
         source = message["source"]
 
-        existing_urls = pg.get_all_urls()
         crawler = get_crawler(source)
+        existing_urls = pg.get_all_urls(source=source)
 
         if crawler.base_url and not robots_checker.check_and_alert(crawler.base_url, source):
             logger.warning("source=%s: robots.txt 차단, 스킵", source)
@@ -70,13 +72,14 @@ def source_collect_worker(event, context):
             refs = crawler.collect_listings()
         except Exception:
             logger.exception("source=%s 목록 수집 실패", source)
-            raise
+            failures.append({"itemIdentifier": record["messageId"]})
+            continue
 
         _check_listing_quality(source, refs)
         new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
         logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
 
-    return {"statusCode": 200}
+    return {"statusCode": 200, "batchItemFailures": failures}
 
 
 def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:

@@ -17,7 +17,7 @@ from crawler.base import JobDetail, JobListingRef
 
 
 def _make_sqs_event(body: dict) -> dict:
-    return {"Records": [{"body": json.dumps(body)}]}
+    return {"Records": [{"body": json.dumps(body), "messageId": "test-msg-001"}]}
 
 
 def _ref(external_id: str, company: str, title: str) -> JobListingRef:
@@ -188,10 +188,10 @@ def test_source_collect_worker_skips_blocked_source(
 @patch("handlers.collect.boto3.client")
 @patch("handlers.collect.get_pg_storage")
 @patch("handlers.collect.get_crawler")
-def test_source_collect_worker_raises_on_crawl_failure(
+def test_source_collect_worker_partial_failure(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
-    """크롤링 실패 시 SQS 재시도를 위해 예외가 전파되어야 한다."""
+    """크롤링 실패 시 batchItemFailures로 해당 메시지만 재시도."""
     mock_boto_client.return_value = MagicMock()
     mock_pg = MagicMock()
     mock_pg.get_all_urls.return_value = set()
@@ -207,8 +207,8 @@ def test_source_collect_worker_raises_on_crawl_failure(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    with pytest.raises(RuntimeError, match="timeout"):
-        app.source_collect_worker(event, None)
+    result = app.source_collect_worker(event, None)
+    assert result["batchItemFailures"] == [{"itemIdentifier": "test-msg-001"}]
 
 
 # ─────────────────────────────────────────────────────────
