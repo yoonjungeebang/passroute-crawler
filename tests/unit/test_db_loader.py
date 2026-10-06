@@ -36,7 +36,7 @@ def _parsed_json_data(**overrides) -> dict:
         "title": "백엔드",
         "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
-        "deadline": "2026-05-01",
+        "deadline": 1777648000,
         "crawled_at": "2026-04-12T18:00:00+09:00",
         "career_level": "",
         "embedding": [0.1] * 768,
@@ -104,8 +104,8 @@ def test_db_loader_processes_delete_request(mock_boto_client, mock_get_pg):
     app.db_loader(event, None)
 
     call_arg = mock_pg.delete_expired.call_args.args[0]
-    assert isinstance(call_arg, datetime)
-    assert int(call_arg.timestamp()) == 1776164400
+    assert isinstance(call_arg, int)
+    assert call_arg == 1776164400
 
     # delete-requests/ 아카이브 후 삭제
     mock_s3.copy_object.assert_called_once_with(
@@ -171,7 +171,7 @@ def test_db_loader_handles_legacy_now_iso(mock_boto_client, mock_get_pg):
     app.db_loader(event, None)
 
     call_args = mock_pg.delete_expired.call_args.args[0]
-    assert isinstance(call_args, datetime)
+    assert isinstance(call_args, int)
 
 
 @patch("handlers.load.get_pg_storage")

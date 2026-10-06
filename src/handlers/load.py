@@ -1,8 +1,9 @@
 """Lambda 핸들러: DB 로더 (SQS 트리거, S3 parsed/ 이벤트)."""
+import dataclasses
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import boto3
 
@@ -54,18 +55,13 @@ def _load_parsed_file(s3, bucket, key, pg):
         archive_and_delete(s3, bucket, key)
         return
 
-    detail = JobDetail(
-        source=data["source"],
-        external_id=data["external_id"],
-        url=data["url"],
-        company_name=data["company_name"],
-        title=data["title"],
-        raw_text=data["raw_text"],
-        tech_stack=tuple(data.get("tech_stack", [])),
-        deadline=data.get("deadline", ""),
-        crawled_at=data["crawled_at"],
-        career_level=data.get("career_level", ""),
-    )
+    field_names = {f.name for f in dataclasses.fields(JobDetail)}
+    kwargs = {k: v for k, v in data.items() if k in field_names}
+    kwargs.setdefault("career_level", "")
+    kwargs.setdefault("deadline", 0)
+    if "tech_stack" in kwargs:
+        kwargs["tech_stack"] = tuple(kwargs["tech_stack"])
+    detail = JobDetail(**kwargs)
     embedding = data.get("embedding")
     embedding_status = data.get("embedding_status", "ok")
     pg.save(detail, embedding=embedding, embedding_status=embedding_status)
@@ -79,11 +75,9 @@ def _load_delete_request(s3, bucket, key, pg):
     data = json.loads(resp["Body"].read().decode("utf-8"))
 
     now_ts = data.get("now_ts")
-    if now_ts is not None:
-        now = datetime.fromtimestamp(now_ts, tz=timezone.utc)
-    else:
-        now = datetime.fromisoformat(data["now_iso"])
+    if now_ts is None:
+        now_ts = int(datetime.fromisoformat(data["now_iso"]).timestamp())
 
-    deleted = pg.delete_expired(now)
+    deleted = pg.delete_expired(now_ts)
     archive_and_delete(s3, bucket, key)
     logger.info("만료 공고 삭제 완료: %d건, key=%s", deleted, key)
