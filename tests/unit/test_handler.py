@@ -59,9 +59,9 @@ def _detail(**overrides) -> JobDetail:
 # ─────────────────────────────────────────────────────────
 
 
-@patch("app.iter_sources", return_value=iter(["jumpit", "programmers"]))
-@patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("handlers.collect.iter_sources", return_value=iter(["jumpit", "programmers"]))
+@patch("handlers.collect.boto3.client")
+@patch("handlers._common.S3Storage")
 def test_job_list_collector_dispatches_sources(
     mock_storage_cls, mock_boto_client, mock_iter,
 ):
@@ -85,9 +85,9 @@ def test_job_list_collector_dispatches_sources(
     assert msg["source"] == "jumpit"
 
 
-@patch("app.iter_sources", return_value=iter(["jumpit"]))
-@patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("handlers.collect.iter_sources", return_value=iter(["jumpit"]))
+@patch("handlers.collect.boto3.client")
+@patch("handlers._common.S3Storage")
 def test_job_list_collector_calls_delete_expired(
     mock_storage_cls, mock_boto_client, mock_iter,
 ):
@@ -102,8 +102,8 @@ def test_job_list_collector_calls_delete_expired(
     mock_storage.delete_expired.assert_called_once()
 
 
-@patch("app.boto3.client")
-@patch("app.S3Storage")
+@patch("handlers.collect.boto3.client")
+@patch("handlers._common.S3Storage")
 def test_job_list_collector_fails_fast_when_queue_url_missing(
     mock_storage_cls, mock_boto_client, monkeypatch,
 ):
@@ -122,9 +122,9 @@ def test_job_list_collector_fails_fast_when_queue_url_missing(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("app.boto3.client")
-@patch("app._get_pg_storage")
-@patch("app.get_crawler")
+@patch("handlers.collect.boto3.client")
+@patch("handlers.collect.get_pg_storage")
+@patch("handlers.collect.get_crawler")
 def test_source_collect_worker_dispatches_new_listings(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -158,9 +158,9 @@ def test_source_collect_worker_dispatches_new_listings(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("app.boto3.client")
-@patch("app._get_pg_storage")
-@patch("app.get_crawler")
+@patch("handlers.collect.boto3.client")
+@patch("handlers.collect.get_pg_storage")
+@patch("handlers.collect.get_crawler")
 def test_source_collect_worker_skips_blocked_source(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -185,9 +185,9 @@ def test_source_collect_worker_skips_blocked_source(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("app.boto3.client")
-@patch("app._get_pg_storage")
-@patch("app.get_crawler")
+@patch("handlers.collect.boto3.client")
+@patch("handlers.collect.get_pg_storage")
+@patch("handlers.collect.get_crawler")
 def test_source_collect_worker_raises_on_crawl_failure(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -216,9 +216,9 @@ def test_source_collect_worker_raises_on_crawl_failure(
 # ─────────────────────────────────────────────────────────
 
 
-@patch("app.time.sleep")
-@patch("app.S3Storage")
-@patch("app.get_crawler")
+@patch("handlers.crawl.time.sleep")
+@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.get_crawler")
 def test_job_crawl_saves_raw(mock_get_crawler, mock_storage_cls, mock_sleep):
     """상세 크롤링 성공 시 storage.save_raw 가 호출되어야 한다."""
     mock_storage = MagicMock()
@@ -243,9 +243,9 @@ def test_job_crawl_saves_raw(mock_get_crawler, mock_storage_cls, mock_sleep):
     mock_sleep.assert_called_once()
 
 
-@patch("app.time.sleep")
-@patch("app.S3Storage")
-@patch("app.get_crawler")
+@patch("handlers.crawl.time.sleep")
+@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.get_crawler")
 def test_job_crawl_skips_when_fetch_returns_none(
     mock_get_crawler, mock_storage_cls, mock_sleep,
 ):
@@ -269,9 +269,9 @@ def test_job_crawl_skips_when_fetch_returns_none(
     mock_storage.save_raw.assert_not_called()
 
 
-@patch("app.time.sleep")
-@patch("app.S3Storage")
-@patch("app.get_crawler")
+@patch("handlers.crawl.time.sleep")
+@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.get_crawler")
 def test_job_crawl_reraises_on_failure(mock_get_crawler, mock_storage_cls, mock_sleep):
     """크롤링 예외 발생 시 SQS 재시도를 위해 예외가 다시 던져져야 한다."""
     mock_storage_cls.return_value = MagicMock()

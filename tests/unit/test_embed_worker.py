@@ -58,7 +58,7 @@ def _mock_head_object_not_found(mock_s3: MagicMock) -> None:
 
 
 @patch("core.embedding.embed_text", return_value=[0.1] * 768)
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
     """raw/ JSON 을 읽어 임베딩 후 parsed/ 에 저장하고 raw/ 를 삭제한다."""
     mock_s3 = MagicMock()
@@ -91,7 +91,7 @@ def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
 
 
 @patch("core.embedding.embed_text", side_effect=RuntimeError("model error"))
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_embed):
     """임베딩 실패 시에도 parsed/ 에 임베딩 없이 저장하고 raw/ 를 삭제한다."""
     mock_s3 = MagicMock()
@@ -114,7 +114,7 @@ def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_
     mock_s3.delete_object.assert_called_once()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_non_raw_key(mock_boto_client):
     """raw/ 가 아닌 키는 무시한다."""
     mock_s3 = MagicMock()
@@ -127,7 +127,7 @@ def test_embed_worker_skips_non_raw_key(mock_boto_client):
     mock_s3.get_object.assert_not_called()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_non_json_key(mock_boto_client):
     """raw/ 이지만 .json 이 아닌 키는 무시한다."""
     mock_s3 = MagicMock()
@@ -140,7 +140,7 @@ def test_embed_worker_skips_non_json_key(mock_boto_client):
     mock_s3.get_object.assert_not_called()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_already_processed(mock_boto_client):
     """parsed/ 에 이미 파일이 존재하면 임베딩을 건너뛰고 raw/ 만 삭제한다."""
     mock_s3 = MagicMock()
