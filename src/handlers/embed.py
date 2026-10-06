@@ -6,6 +6,8 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
+from storage.s3 import verify_content_hash
+
 from ._common import archive_and_delete
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,27 @@ def embed_worker(event, context):
             resp = s3.get_object(Bucket=bucket, Key=key)
             data = json.loads(resp["Body"].read().decode("utf-8"))
             trace_id = data.get("trace_id", "")
+
+            if not verify_content_hash(data):
+                logger.error(
+                    "무결성 검증 실패: key=%s trace_id=%s", key, trace_id,
+                )
+                try:
+                    from core.notify import send_monitor_alert  # noqa: C0415
+
+                    send_monitor_alert(
+                        title="\u26a0\ufe0f 데이터 무결성 검증 실패",
+                        description=(
+                            f"**키**: `{key}`\n"
+                            f"**trace_id**: `{trace_id}`\n"
+                            "S3 저장 후 콘텐츠 해시 불일치 감지"
+                        ),
+                        color=0xFF0000,
+                    )
+                except Exception:
+                    logger.exception("무결성 알림 전송 실패")
+                failures.append({"itemIdentifier": record["messageId"]})
+                continue
 
             logger.info("임베딩 시작: %s trace_id=%s", key, trace_id)
 

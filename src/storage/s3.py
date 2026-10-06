@@ -1,5 +1,6 @@
 """S3 중간 저장소. Lambda 가 크롤링 결과를 S3 에 저장하면 db_loader Lambda 가 PostgreSQL 로 옮긴다."""
 import dataclasses
+import hashlib
 import json
 import logging
 import uuid
@@ -72,6 +73,8 @@ class S3Storage:
             raise ValueError(f"스키마 검증 실패 ({detail.external_id}): {errors}")
 
         body = json.dumps(data, ensure_ascii=False)
+        data["content_hash"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("S3 raw 저장 완료: %s trace_id=%s", key, trace_id)
         return key
@@ -81,6 +84,8 @@ class S3Storage:
         key = f"raw/{data['source']}/{data['external_id']}.json"
         data.setdefault("_schema_version", SCHEMA_VERSION)
         data.setdefault("trace_id", uuid.uuid4().hex)
+        body = json.dumps(data, ensure_ascii=False)
+        data["content_hash"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
         body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("S3 raw 저장 완료: %s trace_id=%s", key, data["trace_id"])
@@ -112,3 +117,17 @@ def _detail_to_dict(detail: JobDetail) -> dict:
     data["tech_stack"] = list(detail.tech_stack)
     data["_schema_version"] = SCHEMA_VERSION
     return data
+
+
+def verify_content_hash(data: dict) -> bool:
+    """content_hash 필드로 데이터 무결성을 검증한다.
+
+    content_hash는 해시 계산 전의 JSON 직렬화 결과에서 산출된다.
+    해시가 없는 데이터(이전 버전)는 검증을 건너뛴다(하위 호환).
+    """
+    stored_hash = data.pop("content_hash", None)
+    if stored_hash is None:
+        return True
+    body = json.dumps(data, ensure_ascii=False)
+    actual_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return stored_hash == actual_hash
