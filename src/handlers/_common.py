@@ -14,7 +14,9 @@ SQS_BATCH_SIZE = 10
 def archive_and_delete(s3, bucket: str, key: str) -> None:
     """S3 객체를 archive/ 프리픽스로 복사한 뒤 원본을 삭제한다.
 
-    문제 발생 시 archive/ 에서 원본 데이터를 확인하거나 재처리할 수 있다.
+    copy → delete 는 원자적이지 않다. 두 단계 사이에 Lambda가 죽으면
+    원본이 남아 SQS 재전달로 재처리될 수 있지만, 다운스트림 핸들러가
+    멱등적(UPSERT, head_object 중복 체크)이므로 데이터 정합성에 영향 없다.
     archive/ 객체는 S3 Lifecycle 규칙에 의해 14일 후 자동 만료된다.
     """
     archive_key = f"archive/{key}"
