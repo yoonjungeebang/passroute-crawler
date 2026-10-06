@@ -60,25 +60,24 @@ def source_collect_worker(event, context):
         message = json.loads(record["body"])
         source = message["source"]
 
-        crawler = get_crawler(source)
-
-        if crawler.base_url and not robots_checker.check_and_alert(crawler.base_url, source):
-            logger.warning("source=%s: robots.txt 차단, 스킵", source)
-            continue
-
-        logger.info("source=%s 목록 수집 시작", source)
         try:
-            refs = crawler.collect_listings()
-        except Exception:
-            logger.exception("source=%s 목록 수집 실패", source)
-            failures.append({"itemIdentifier": record["messageId"]})
-            continue
+            crawler = get_crawler(source)
 
-        _check_listing_quality(source, refs)
-        candidate_urls = [ref.url for ref in refs]
-        existing_urls = pg.get_existing_urls(candidate_urls)
-        new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
-        logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
+            if crawler.base_url and not robots_checker.check_and_alert(crawler.base_url, source):
+                logger.warning("source=%s: robots.txt 차단, 스킵", source)
+                continue
+
+            logger.info("source=%s 목록 수집 시작", source)
+            refs = crawler.collect_listings()
+
+            _check_listing_quality(source, refs)
+            candidate_urls = [ref.url for ref in refs]
+            existing_urls = pg.get_existing_urls(candidate_urls)
+            new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
+            logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
+        except Exception:
+            logger.exception("source=%s 처리 실패", source)
+            failures.append({"itemIdentifier": record["messageId"]})
 
     return {"statusCode": 200, "batchItemFailures": failures}
 
@@ -228,14 +227,21 @@ def news_collector(event, context):
     existing_urls = pg.get_existing_urls(candidate_urls)
 
     saved_count = 0
+    fail_count = 0
     for item in items:
         if item.url in existing_urls:
             continue
 
-        data = news_item_to_detail_dict(item)
-        storage.save_raw_dict(data)
-        saved_count += 1
+        try:
+            data = news_item_to_detail_dict(item)
+            storage.save_raw_dict(data)
+            saved_count += 1
+        except Exception:
+            fail_count += 1
+            logger.exception("뉴스 항목 저장 실패: url=%s", item.url)
 
+    if fail_count:
+        logger.warning("뉴스 수집 부분 실패: %d건 실패", fail_count)
     logger.info("뉴스 수집 완료: 전체 %d건, 신규 저장 %d건", len(items), saved_count)
     return {
         "statusCode": 200,
@@ -264,14 +270,21 @@ def blog_collector(event, context):
     existing_urls = pg.get_existing_urls(candidate_urls)
 
     saved_count = 0
+    fail_count = 0
     for article in articles:
         if article.url in existing_urls:
             continue
 
-        data = blog_article_to_detail_dict(article)
-        storage.save_raw_dict(data)
-        saved_count += 1
+        try:
+            data = blog_article_to_detail_dict(article)
+            storage.save_raw_dict(data)
+            saved_count += 1
+        except Exception:
+            fail_count += 1
+            logger.exception("블로그 항목 저장 실패: url=%s", article.url)
 
+    if fail_count:
+        logger.warning("블로그 수집 부분 실패: %d건 실패", fail_count)
     logger.info("블로그 수집 완료: 전체 %d건, 신규 저장 %d건", len(articles), saved_count)
     return {
         "statusCode": 200,
