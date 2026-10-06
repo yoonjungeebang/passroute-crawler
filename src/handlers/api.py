@@ -113,6 +113,7 @@ def company_collect(event, context):
     )
     news_items = news_collector_inst.collect_all()
 
+    news_batch: list[tuple[JobDetail, list[float] | None, str]] = []
     for item in news_items:
         data = news_item_to_detail_dict(item)
         detail = JobDetail(
@@ -127,13 +128,14 @@ def company_collect(event, context):
             crawled_at=data["crawled_at"],
             career_level=data.get("career_level", ""),
         )
-        pg.save(detail)
+        news_batch.append((detail, None, "ok"))
         news_saved.append({
             "title": item.title,
             "url": item.url,
             "company_name": item.company_name,
             "description": item.description,
         })
+    pg.save_batch(news_batch)
 
     metrics.put_duration("NewsCollectDuration", t0)
     metrics.put_count("NewsCount", len(news_items))
@@ -168,6 +170,7 @@ def company_collect(event, context):
     robots = RobotsChecker()
     blog_session = _make_blog_session()
     tech_articles = []
+    blog_batch: list[tuple[JobDetail, list[float] | None, str]] = []
 
     for item in filtered:
         url = item["url"]
@@ -209,7 +212,8 @@ def company_collect(event, context):
             crawled_at=datetime.now(KST).isoformat(),
             career_level="",
         )
-        pg.save(detail)
+        blog_batch.append((detail, None, "ok"))
+    pg.save_batch(blog_batch)
 
     metrics.put_duration("BlogCollectDuration", t0)
     metrics.put_count("BlogArticleCount", len(tech_articles))

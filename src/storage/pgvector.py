@@ -159,6 +159,51 @@ class PgVectorStorage:
             cur.execute(_UPSERT, params)
         logger.info("저장 완료: %s - %s", detail.company_name, detail.title)
 
+    def save_batch(self, items: list[tuple[JobDetail, list[float] | None, str]]) -> int:
+        """여러 레코드를 한번에 UPSERT. 각 항목은 (detail, embedding, embedding_status) 튜플.
+
+        Returns:
+            저장된 건수.
+        """
+        if not items:
+            return 0
+
+        self._ensure_alive()
+
+        params_list = []
+        for detail, embedding, embedding_status in items:
+            parts: list[str] = []
+            if detail.raw_text:
+                parts.append(detail.raw_text)
+            if detail.tech_stack:
+                parts.append(f"[기술스택]\n{_tech_stack_to_str(detail.tech_stack)}")
+            document = "\n\n".join(parts)
+            if not document:
+                continue
+
+            params_list.append({
+                "url": detail.url,
+                "source": detail.source,
+                "external_id": detail.external_id,
+                "company_name": detail.company_name,
+                "title": detail.title,
+                "document": document,
+                "embedding": _to_pg_vector(embedding),
+                "embedding_status": embedding_status,
+                "deadline": _deadline_to_ts(detail.deadline),
+                "crawled_at": detail.crawled_at,
+                "tech_stack": _tech_stack_to_str(detail.tech_stack),
+                "career_level": detail.career_level,
+            })
+
+        if not params_list:
+            return 0
+
+        with self.conn.cursor() as cur:
+            psycopg2.extras.execute_batch(cur, _UPSERT, params_list)
+        logger.info("배치 저장 완료: %d건", len(params_list))
+        return len(params_list)
+
     def delete_expired(self, now_ts: int) -> int:
         """마감일이 지난 공고 삭제. 상시채용(deadline=0)은 제외."""
         self._ensure_alive()
