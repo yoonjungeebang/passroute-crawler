@@ -37,10 +37,11 @@ def embed_worker(event, context):
                 logger.warning("embed_worker: 예상하지 못한 키, 스킵: %s", key)
                 continue
 
-            logger.info("임베딩 시작: %s", key)
-
             resp = s3.get_object(Bucket=bucket, Key=key)
             data = json.loads(resp["Body"].read().decode("utf-8"))
+            trace_id = data.get("trace_id", "")
+
+            logger.info("임베딩 시작: %s trace_id=%s", key, trace_id)
 
             parsed_key = f"parsed/{data['source']}/{data['external_id']}.json"
             try:
@@ -75,7 +76,7 @@ def embed_worker(event, context):
                 Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
             )
             archive_and_delete(s3, bucket, key)
-            logger.info("임베딩 완료: %s → %s", key, parsed_key)
+            logger.info("임베딩 완료: %s → %s trace_id=%s", key, parsed_key, trace_id)
         except Exception:
             logger.exception("레코드 처리 실패: key=%s", key)
             failures.append({"itemIdentifier": record["messageId"]})

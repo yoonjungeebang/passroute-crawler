@@ -56,10 +56,16 @@ class S3Storage:
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("S3 저장 완료: %s", key)
 
-    def save_raw(self, detail: JobDetail) -> str:
-        """크롤링 결과를 raw/{source}/{external_id}.json 으로 저장. 임베딩 미포함."""
+    def save_raw(self, detail: JobDetail, trace_id: str = "") -> str:
+        """크롤링 결과를 raw/{source}/{external_id}.json 으로 저장. 임베딩 미포함.
+
+        trace_id: 종단 간 추적 식별자. collect → crawl → embed → load 전 과정을
+        추적하기 위한 고유 ID.
+        """
         key = f"raw/{detail.source}/{detail.external_id}.json"
         data = _detail_to_dict(detail)
+        if trace_id:
+            data["trace_id"] = trace_id
         errors = validate_raw_schema(data)
         if errors:
             logger.error("스키마 검증 실패: %s, errors=%s", detail.external_id, errors)
@@ -67,16 +73,17 @@ class S3Storage:
 
         body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
-        logger.info("S3 raw 저장 완료: %s", key)
+        logger.info("S3 raw 저장 완료: %s trace_id=%s", key, trace_id)
         return key
 
     def save_raw_dict(self, data: dict) -> str:
         """dict 를 raw/{source}/{external_id}.json 으로 저장."""
         key = f"raw/{data['source']}/{data['external_id']}.json"
         data.setdefault("_schema_version", SCHEMA_VERSION)
+        data.setdefault("trace_id", uuid.uuid4().hex)
         body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
-        logger.info("S3 raw 저장 완료: %s", key)
+        logger.info("S3 raw 저장 완료: %s trace_id=%s", key, data["trace_id"])
         return key
 
     def delete_expired(self, now_iso: str) -> bool:

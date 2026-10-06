@@ -31,6 +31,7 @@ def job_crawl(event, context):
 
     for record in event["Records"]:
         message = json.loads(record["body"])
+        trace_id = message.get("trace_id", "")
         ref = JobListingRef(
             source=message["source"],
             external_id=message["external_id"],
@@ -40,7 +41,10 @@ def job_crawl(event, context):
         )
 
         crawler = get_crawler(ref.source)
-        logger.info("상세 크롤링: source=%s id=%s (%s)", ref.source, ref.external_id, ref.company_name)
+        logger.info(
+            "상세 크롤링: source=%s id=%s (%s) trace_id=%s",
+            ref.source, ref.external_id, ref.company_name, trace_id,
+        )
 
         breaker = get_breaker(ref.source)
         try:
@@ -50,7 +54,7 @@ def job_crawl(event, context):
                 logger.info("상세 정보 없음, 스킵: id=%s", ref.external_id)
                 continue
 
-            storage.save_raw(detail)
+            storage.save_raw(detail, trace_id=trace_id)
             crawl_count += 1
         except CrawlValidationError as e:
             logger.error("크롤링 검증 실패: %s", e)

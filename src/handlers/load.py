@@ -71,9 +71,14 @@ def _load_parsed_file(s3, bucket, key, pg):
         raise
     data = json.loads(resp["Body"].read().decode("utf-8"))
 
+    trace_id = data.get("trace_id", "")
+
     schema_errors = validate_raw_schema(data)
     if schema_errors:
-        logger.error("DB 적재 전 스키마 검증 실패: key=%s, errors=%s", key, schema_errors)
+        logger.error(
+            "DB 적재 전 스키마 검증 실패: key=%s trace_id=%s errors=%s",
+            key, trace_id, schema_errors,
+        )
         archive_and_delete(s3, bucket, key)
         return
 
@@ -88,7 +93,7 @@ def _load_parsed_file(s3, bucket, key, pg):
     embedding_status = data.get("embedding_status", "ok")
     pg.save(detail, embedding=embedding, embedding_status=embedding_status)
     archive_and_delete(s3, bucket, key)
-    logger.info("DB 적재 완료: %s", key)
+    logger.info("DB 적재 완료: %s trace_id=%s", key, trace_id)
 
 
 def _load_delete_request(s3, bucket, key, pg):

@@ -1,6 +1,7 @@
 """Lambda 핸들러: 목록 수집 (cron) + 소스별 수집 (SQS 트리거) + 뉴스/블로그 수집."""
 import json
 import logging
+import uuid
 from datetime import datetime
 
 import boto3
@@ -131,6 +132,7 @@ def _dispatch_new_listings(
         if ref.url in existing_urls:
             continue
 
+        trace_id = uuid.uuid4().hex
         batch.append({
             "Id": str(len(batch)),
             "MessageBody": json.dumps({
@@ -139,6 +141,7 @@ def _dispatch_new_listings(
                 "url": ref.url,
                 "company_name": ref.company_name,
                 "title": ref.title,
+                "trace_id": trace_id,
             }, ensure_ascii=False),
         })
         new_count += 1
