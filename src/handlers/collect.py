@@ -61,7 +61,6 @@ def source_collect_worker(event, context):
         source = message["source"]
 
         crawler = get_crawler(source)
-        existing_urls = pg.get_all_urls(source=source)
 
         if crawler.base_url and not robots_checker.check_and_alert(crawler.base_url, source):
             logger.warning("source=%s: robots.txt 차단, 스킵", source)
@@ -76,6 +75,8 @@ def source_collect_worker(event, context):
             continue
 
         _check_listing_quality(source, refs)
+        candidate_urls = [ref.url for ref in refs]
+        existing_urls = pg.get_existing_urls(candidate_urls)
         new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
         logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
 

@@ -191,6 +191,20 @@ class PgVectorStorage:
                 urls.update(row[0] for row in batch)
         return urls
 
+    def get_existing_urls(self, candidate_urls: list[str]) -> set[str]:
+        """후보 URL 중 이미 저장된 것만 반환. PK 인덱스 룩업으로 동작."""
+        self._ensure_alive()
+
+        if not candidate_urls:
+            return set()
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT url FROM job_descriptions WHERE url = ANY(%s)",
+                (candidate_urls,),
+            )
+            return {row[0] for row in cur.fetchall()}
+
     def close(self) -> None:
         try:
             self.conn.close()

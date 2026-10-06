@@ -133,7 +133,7 @@ def test_source_collect_worker_dispatches_new_listings(
     mock_boto_client.return_value = mock_sqs
 
     mock_pg = MagicMock()
-    mock_pg.get_all_urls.return_value = {
+    mock_pg.get_existing_urls.return_value = {
         "https://www.jumpit.co.kr/position/111",
     }
     mock_get_pg.return_value = mock_pg
@@ -167,7 +167,7 @@ def test_source_collect_worker_skips_blocked_source(
     """robots.txt 차단 시 해당 소스를 스킵한다."""
     mock_boto_client.return_value = MagicMock()
     mock_pg = MagicMock()
-    mock_pg.get_all_urls.return_value = set()
+    mock_pg.get_existing_urls.return_value = set()
     mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
@@ -194,7 +194,7 @@ def test_source_collect_worker_partial_failure(
     """크롤링 실패 시 batchItemFailures로 해당 메시지만 재시도."""
     mock_boto_client.return_value = MagicMock()
     mock_pg = MagicMock()
-    mock_pg.get_all_urls.return_value = set()
+    mock_pg.get_existing_urls.return_value = set()
     mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
