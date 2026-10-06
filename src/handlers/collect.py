@@ -1,4 +1,4 @@
-"""Lambda 핸들러: 목록 수집 (cron) + 소스별 수집 (SQS 트리거)."""
+"""Lambda 핸들러: 목록 수집 (cron) + 소스별 수집 (SQS 트리거) + 뉴스/블로그 수집."""
 import json
 import logging
 from datetime import datetime
@@ -147,3 +147,105 @@ def _dispatch_new_listings(
         sqs.send_message_batch(QueueUrl=queue_url, Entries=batch)
 
     return new_count
+
+
+# ── URL 인덱스 ──
+
+
+def _load_url_index(s3, bucket: str) -> set[str]:
+    """S3 의 url-index.json 을 읽어 기존 URL 집합을 반환."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key="url-index.json")
+        data = json.loads(resp["Body"].read().decode("utf-8"))
+        return set(data.get("urls", []))
+    except Exception:
+        logger.warning("url-index.json 로드 실패, 빈 집합으로 진행")
+        return set()
+
+
+# ── url_index_rebuilder (cron) ──
+
+
+def url_index_rebuilder(event, context):
+    """PostgreSQL 의 전체 URL 을 url-index.json 으로 S3 에 저장."""
+    pg = get_pg_storage()
+    storage = make_storage()
+
+    all_urls = pg.get_all_urls()
+    body = json.dumps({"urls": sorted(all_urls)}, ensure_ascii=False)
+    storage.s3.put_object(
+        Bucket=storage.bucket,
+        Key="url-index.json",
+        Body=body.encode("utf-8"),
+    )
+    logger.info("URL 인덱스 재구축 완료: %d건", len(all_urls))
+
+    return {"statusCode": 200, "body": json.dumps({"url_count": len(all_urls)})}
+
+
+# ── news_collector (cron) ──
+
+
+def news_collector(event, context):
+    """네이버 뉴스 수집 → S3 raw/ 저장. 기존 파이프라인(embed → load)이 후속 처리."""
+    from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict  # noqa: C0415
+    from core.secrets import get_naver_credentials  # noqa: C0415
+
+    s3 = boto3.client("s3")
+    storage = make_storage()
+    bucket = storage.bucket
+
+    existing_urls = _load_url_index(s3, bucket)
+
+    client_id, client_secret = get_naver_credentials()
+    collector = NaverNewsCollector(client_id=client_id, client_secret=client_secret)
+    items = collector.collect_all()
+
+    saved_count = 0
+    for item in items:
+        if item.url in existing_urls:
+            continue
+        existing_urls.add(item.url)
+
+        data = news_item_to_detail_dict(item)
+        storage.save_raw_dict(data)
+        saved_count += 1
+
+    logger.info("뉴스 수집 완료: 전체 %d건, 신규 저장 %d건", len(items), saved_count)
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"total": len(items), "saved": saved_count}),
+    }
+
+
+# ── blog_collector (cron) ──
+
+
+def blog_collector(event, context):
+    """기술 블로그 RSS 수집 → S3 raw/ 저장. 기존 파이프라인이 후속 처리."""
+    from collector.tech_blog import TechBlogCollector, blog_article_to_detail_dict  # noqa: C0415
+
+    s3 = boto3.client("s3")
+    storage = make_storage()
+    bucket = storage.bucket
+
+    existing_urls = _load_url_index(s3, bucket)
+
+    collector = TechBlogCollector()
+    articles = collector.collect_all()
+
+    saved_count = 0
+    for article in articles:
+        if article.url in existing_urls:
+            continue
+        existing_urls.add(article.url)
+
+        data = blog_article_to_detail_dict(article)
+        storage.save_raw_dict(data)
+        saved_count += 1
+
+    logger.info("블로그 수집 완료: 전체 %d건, 신규 저장 %d건", len(articles), saved_count)
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"total": len(articles), "saved": saved_count}),
+    }

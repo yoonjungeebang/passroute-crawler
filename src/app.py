@@ -22,7 +22,13 @@ from handlers._common import make_storage as _make_storage  # noqa: F401
 from crawler.registry import get_crawler, iter_sources  # noqa: F401
 
 # ── 핸들러 함수 re-export ──
-from handlers.collect import job_list_collector, source_collect_worker  # noqa: F401
+from handlers.collect import (  # noqa: F401
+    job_list_collector,
+    source_collect_worker,
+    url_index_rebuilder,
+    news_collector,
+    blog_collector,
+)
 from handlers.crawl import job_crawl  # noqa: F401
 from handlers.embed import embed_worker  # noqa: F401
 from handlers.load import db_loader  # noqa: F401
