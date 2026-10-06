@@ -15,12 +15,18 @@ logger = logging.getLogger(__name__)
 
 
 def job_crawl(event, context):
-    """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장."""
+    """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장.
+
+    실패한 레코드만 batchItemFailures로 반환하여 성공한 메시지의
+    불필요한 재처리를 방지한다. CircuitOpenError는 일시적 장애이므로
+    메시지를 소비하지 않고 재시도 대상으로 남긴다.
+    """
     from core.metrics import MetricsLogger  # noqa: C0415
 
     t_total = time.monotonic()
     metrics = MetricsLogger(function_name="job_crawl")
     crawl_count = 0
+    failures: list[dict] = []
     storage = make_storage()
 
     for record in event["Records"]:
@@ -80,15 +86,17 @@ def job_crawl(event, context):
                 logger.exception("품질 검증 알림 전송 실패")
             continue
         except CircuitOpenError:
-            logger.warning("서킷 OPEN, 상세 크롤링 스킵: source=%s id=%s", ref.source, ref.external_id)
+            logger.warning("서킷 OPEN, 재시도 대기: source=%s id=%s", ref.source, ref.external_id)
+            failures.append({"itemIdentifier": record["messageId"]})
             continue
         except Exception:
             logger.exception("상세 크롤링 실패: id=%s", ref.external_id)
-            raise
+            failures.append({"itemIdentifier": record["messageId"]})
+            continue
 
         time.sleep(random.uniform(1.0, 2.5))
 
     metrics.put_duration("TotalDuration", t_total)
     metrics.put_count("CrawledCount", crawl_count)
     metrics.flush()
-    return {"statusCode": 200}
+    return {"statusCode": 200, "batchItemFailures": failures}

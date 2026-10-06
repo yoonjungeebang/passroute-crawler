@@ -272,8 +272,10 @@ def test_job_crawl_skips_when_fetch_returns_none(
 @patch("handlers.crawl.time.sleep")
 @patch("handlers._common.S3Storage")
 @patch("handlers.crawl.get_crawler")
-def test_job_crawl_reraises_on_failure(mock_get_crawler, mock_storage_cls, mock_sleep):
-    """크롤링 예외 발생 시 SQS 재시도를 위해 예외가 다시 던져져야 한다."""
+def test_job_crawl_reports_failure_in_batch_item_failures(
+    mock_get_crawler, mock_storage_cls, mock_sleep,
+):
+    """크롤링 예외 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
     mock_storage_cls.return_value = MagicMock()
 
     mock_crawler = MagicMock()
@@ -288,5 +290,6 @@ def test_job_crawl_reraises_on_failure(mock_get_crawler, mock_storage_cls, mock_
         "title": "t",
     })
 
-    with pytest.raises(RuntimeError, match="boom"):
-        app.job_crawl(event, None)
+    result = app.job_crawl(event, None)
+    assert len(result["batchItemFailures"]) == 1
+    assert result["batchItemFailures"][0]["itemIdentifier"] == "test-msg-001"
