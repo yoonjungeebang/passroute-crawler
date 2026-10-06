@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 def db_loader(event, context):
-    """SQS 트리거. S3 PutObject 이벤트 → parsed/ DB 저장 또는 delete-requests/ 만료 삭제."""
+    """SQS 트리거. S3 PutObject 이벤트 → parsed/ DB 저장 또는 delete-requests/ 만료 삭제.
+
+    SQS at-least-once 특성상 동일 메시지가 재전달될 수 있다.
+    실패한 레코드만 batchItemFailures로 반환하여 성공한 메시지의 불필요한
+    재처리를 방지한다. DB 쓰기 자체는 UPSERT로 멱등적이다.
+    """
     from core.metrics import MetricsLogger  # noqa: C0415
 
     t_total = time.monotonic()
     metrics = MetricsLogger(function_name="db_loader")
     load_count = 0
+    failures: list[dict] = []
     s3 = boto3.client("s3")
     pg = get_pg_storage()
 
@@ -31,18 +37,22 @@ def db_loader(event, context):
         bucket = envelope["detail"]["bucket"]["name"]
         key = envelope["detail"]["object"]["key"]
 
-        if key.startswith("parsed/") and key.endswith(".json"):
-            t0 = time.monotonic()
-            _load_parsed_file(s3, bucket, key, pg)
-            metrics.put_duration("DbWriteDuration", t0)
-            load_count += 1
-        elif key.startswith("delete-requests/") and key.endswith(".json"):
-            _load_delete_request(s3, bucket, key, pg)
+        try:
+            if key.startswith("parsed/") and key.endswith(".json"):
+                t0 = time.monotonic()
+                _load_parsed_file(s3, bucket, key, pg)
+                metrics.put_duration("DbWriteDuration", t0)
+                load_count += 1
+            elif key.startswith("delete-requests/") and key.endswith(".json"):
+                _load_delete_request(s3, bucket, key, pg)
+        except Exception:
+            logger.exception("레코드 처리 실패: key=%s", key)
+            failures.append({"itemIdentifier": record["messageId"]})
 
     metrics.put_duration("TotalDuration", t_total)
     metrics.put_count("LoadedCount", load_count)
     metrics.flush()
-    return {"statusCode": 200}
+    return {"statusCode": 200, "batchItemFailures": failures}
 
 
 def _load_parsed_file(s3, bucket, key, pg):
