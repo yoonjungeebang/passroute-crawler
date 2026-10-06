@@ -286,6 +286,8 @@ Resources:
           Properties:
             Queue: !GetAtt SourceCollectQueue.Arn
             BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
 
   # ── Stage 1: 상세 크롤러 (Tier 2 HTML/API 크롤링) ──
   JobCrawler:
@@ -313,6 +315,8 @@ Resources:
           Properties:
             Queue: !GetAtt JobDetailQueue.Arn
             BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
 
   # ── Stage 1: 뉴스 수집 (cron) ──
   NewsCollector:
@@ -396,6 +400,8 @@ Resources:
           Properties:
             Queue: !GetAtt EmbedQueue.Arn
             BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
     Metadata:
       DockerTag: python3.11
       DockerContext: .
@@ -438,6 +444,8 @@ Resources:
           Properties:
             Queue: !GetAtt DbLoadQueue.Arn
             BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
 
   # ── url-index.json 재구축 (cron, PostgreSQL → S3) ──
   UrlIndexRebuilder:
