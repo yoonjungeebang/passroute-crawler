@@ -12,7 +12,7 @@ import pytest
 import app
 
 
-def _make_s3_event(bucket: str, key: str) -> dict:
+def _make_s3_event(bucket: str, key: str, message_id: str = "msg-001") -> dict:
     """EventBridge S3 이벤트를 SQS 로 래핑한 형태의 이벤트를 생성한다."""
     envelope = {
         "version": "0",
@@ -23,7 +23,7 @@ def _make_s3_event(bucket: str, key: str) -> dict:
             "object": {"key": key, "size": 1234},
         },
     }
-    return {"Records": [{"body": json.dumps(envelope)}]}
+    return {"Records": [{"messageId": message_id, "body": json.dumps(envelope)}]}
 
 
 def _parsed_json_data(**overrides) -> dict:
@@ -137,8 +137,8 @@ def test_db_loader_skips_non_json(mock_boto_client, mock_get_pg):
 
 @patch("handlers.load.get_pg_storage")
 @patch("handlers.load.boto3.client")
-def test_db_loader_reraises_on_failure(mock_boto_client, mock_get_pg):
-    """에러 발생 시 SQS 재시도를 위해 예외가 전파된다."""
+def test_db_loader_reports_failure_in_batch_item_failures(mock_boto_client, mock_get_pg):
+    """에러 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
     mock_s3 = MagicMock()
     mock_boto_client.return_value = mock_s3
     mock_s3.get_object.side_effect = RuntimeError("S3 접근 실패")
@@ -148,8 +148,9 @@ def test_db_loader_reraises_on_failure(mock_boto_client, mock_get_pg):
 
     event = _make_s3_event("test-bucket", "parsed/jobkorea/123.json")
 
-    with pytest.raises(RuntimeError, match="S3 접근 실패"):
-        app.db_loader(event, None)
+    result = app.db_loader(event, None)
+    assert len(result["batchItemFailures"]) == 1
+    assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
 
 
 @patch("handlers.load.get_pg_storage")
