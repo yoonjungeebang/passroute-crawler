@@ -1,8 +1,6 @@
 """PostgreSQL + pgvector 스토리지 클라이언트. 임베딩과 JD 를 저장한다."""
 import logging
 from collections.abc import Iterable
-from datetime import datetime, timezone
-
 import psycopg2
 import psycopg2.extras
 
@@ -63,8 +61,8 @@ ON CONFLICT (url) DO UPDATE SET
     company_name     = EXCLUDED.company_name,
     title            = EXCLUDED.title,
     document         = EXCLUDED.document,
-    embedding        = EXCLUDED.embedding,
-    embedding_status = EXCLUDED.embedding_status,
+    embedding        = COALESCE(EXCLUDED.embedding, job_descriptions.embedding),
+    embedding_status = CASE WHEN EXCLUDED.embedding IS NOT NULL THEN EXCLUDED.embedding_status ELSE job_descriptions.embedding_status END,
     deadline         = EXCLUDED.deadline,
     crawled_at       = EXCLUDED.crawled_at,
     tech_stack       = EXCLUDED.tech_stack,
@@ -87,7 +85,10 @@ class PgVectorStorage:
         return conn
 
     def _ensure_alive(self) -> None:
-        """커넥션이 끊어졌으면 재연결한다. Lambda 웜 스타트 시 stale 커넥션 방지."""
+        """커넥션이 끊어졌으면 재연결한다. Lambda 웜 스타트 시 stale 커넥션 방지.
+
+        DB failover 시 첫 재연결이 실패할 수 있으므로 최대 2회 재시도한다.
+        """
         try:
             if self.conn.closed:
                 raise psycopg2.OperationalError("connection closed")
@@ -99,7 +100,17 @@ class PgVectorStorage:
                 self.conn.close()
             except Exception:
                 pass
-            self.conn = self._connect()
+            for attempt in range(3):
+                try:
+                    self.conn = self._connect()
+                    return
+                except psycopg2.OperationalError:
+                    if attempt < 2:
+                        import time
+                        time.sleep(1)
+                        logger.warning("재접속 실패, 재시도 %d/2", attempt + 1)
+                    else:
+                        raise
 
     def _ensure_schema(self) -> None:
         with self.conn.cursor() as cur:
@@ -197,26 +208,9 @@ def _tech_stack_to_str(tech_stack: Iterable[str]) -> str:
     return ", ".join(tech_stack)
 
 
-def _deadline_to_ts(deadline: str | int) -> int:
-    """마감일을 Unix timestamp(초)로 변환. int 는 그대로 반환, 빈 값은 0."""
-    if isinstance(deadline, int):
-        return deadline
-    if not deadline:
-        return 0
-    # 숫자형 문자열 (크롤러가 str(int(ts)) 형태로 반환하는 경우)
-    try:
-        ts = int(deadline)
-        if ts > 0:
-            return ts
-    except ValueError:
-        pass
-    try:
-        dt = datetime.fromisoformat(deadline)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except ValueError:
-        return 0
+def _deadline_to_ts(deadline: int) -> int:
+    """마감일 Unix timestamp(초). int 를 그대로 반환."""
+    return deadline if isinstance(deadline, int) else 0
 
 
 def _to_pg_vector(embedding: list[float] | None) -> str | None:

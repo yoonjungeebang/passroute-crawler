@@ -1,4 +1,5 @@
 """S3 중간 저장소. Lambda 가 크롤링 결과를 S3 에 저장하면 db_loader Lambda 가 PostgreSQL 로 옮긴다."""
+import dataclasses
 import json
 import logging
 import uuid
@@ -19,7 +20,7 @@ _REQUIRED_RAW_FIELDS: dict[str, type | tuple[type, ...]] = {
     "title": str,
     "raw_text": str,
     "tech_stack": list,
-    "deadline": (str, int),
+    "deadline": int,
     "crawled_at": str,
 }
 
@@ -47,18 +48,7 @@ class S3Storage:
     def save(self, detail: JobDetail, *, embedding: list[float] | None = None) -> None:
         """크롤링 결과를 parsed/{source}/{external_id}.json 으로 S3 에 저장."""
         key = f"parsed/{detail.source}/{detail.external_id}.json"
-        data = {
-            "source": detail.source,
-            "external_id": detail.external_id,
-            "url": detail.url,
-            "company_name": detail.company_name,
-            "title": detail.title,
-            "raw_text": detail.raw_text,
-            "tech_stack": list(detail.tech_stack),
-            "deadline": detail.deadline,
-            "crawled_at": detail.crawled_at,
-            "career_level": detail.career_level,
-        }
+        data = _detail_to_dict(detail)
         if embedding is not None:
             data["embedding"] = embedding
         body = json.dumps(data, ensure_ascii=False)
@@ -69,18 +59,7 @@ class S3Storage:
     def save_raw(self, detail: JobDetail) -> str:
         """크롤링 결과를 raw/{source}/{external_id}.json 으로 저장. 임베딩 미포함."""
         key = f"raw/{detail.source}/{detail.external_id}.json"
-        data = {
-            "source": detail.source,
-            "external_id": detail.external_id,
-            "url": detail.url,
-            "company_name": detail.company_name,
-            "title": detail.title,
-            "raw_text": detail.raw_text,
-            "tech_stack": list(detail.tech_stack),
-            "deadline": detail.deadline,
-            "crawled_at": detail.crawled_at,
-            "career_level": detail.career_level,
-        }
+        data = _detail_to_dict(detail)
         errors = validate_raw_schema(data)
         if errors:
             logger.error("스키마 검증 실패: %s, errors=%s", detail.external_id, errors)
@@ -94,6 +73,7 @@ class S3Storage:
     def save_raw_dict(self, data: dict) -> str:
         """dict 를 raw/{source}/{external_id}.json 으로 저장."""
         key = f"raw/{data['source']}/{data['external_id']}.json"
+        data.setdefault("_schema_version", SCHEMA_VERSION)
         body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("S3 raw 저장 완료: %s", key)
@@ -114,3 +94,14 @@ class S3Storage:
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("삭제 요청 저장: %s", key)
         return True
+
+
+SCHEMA_VERSION = 1
+
+
+def _detail_to_dict(detail: JobDetail) -> dict:
+    """JobDetail → JSON-safe dict. 필드가 추가되면 자동 반영된다."""
+    data = dataclasses.asdict(detail)
+    data["tech_stack"] = list(detail.tech_stack)
+    data["_schema_version"] = SCHEMA_VERSION
+    return data
