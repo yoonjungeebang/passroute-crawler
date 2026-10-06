@@ -200,7 +200,13 @@ def _load_url_index(s3, bucket: str) -> set[str]:
 
 
 def url_index_rebuilder(event, context):
-    """PostgreSQL 의 전체 URL 을 url-index.json 으로 S3 에 저장."""
+    """PostgreSQL 의 전체 URL 을 url-index.json 으로 S3 에 저장.
+
+    추가로 파이프라인 무결성 감사를 수행한다:
+    - 임베딩 실패 레코드 수 확인 (embedding_status='failed')
+    - S3 raw/parsed 잔류 파일 수 확인 (처리 지연 또는 누락 감지)
+    이상 발견 시 Discord #monitor 로 알림을 보낸다.
+    """
     pg = get_pg_storage()
     storage = make_storage()
 
@@ -213,7 +219,70 @@ def url_index_rebuilder(event, context):
     )
     logger.info("URL 인덱스 재구축 완료: %d건", len(all_urls))
 
-    return {"statusCode": 200, "body": json.dumps({"url_count": len(all_urls)})}
+    audit_result = _run_integrity_audit(pg, storage)
+
+    result = {"url_count": len(all_urls)}
+    result.update(audit_result)
+    return {"statusCode": 200, "body": json.dumps(result)}
+
+
+def _run_integrity_audit(pg, storage) -> dict:
+    """파이프라인 무결성 감사. 자가 검증(self-validation)으로 데이터 정합성을 확인."""
+    audit = {}
+    alerts: list[str] = []
+
+    try:
+        with pg.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM job_descriptions WHERE embedding_status = 'failed'"
+            )
+            failed_embeddings = cur.fetchone()[0]
+            audit["failed_embeddings"] = failed_embeddings
+            if failed_embeddings > 0:
+                alerts.append(f"임베딩 실패 레코드: {failed_embeddings}건")
+
+            cur.execute("SELECT COUNT(*) FROM job_descriptions")
+            total_records = cur.fetchone()[0]
+            audit["total_records"] = total_records
+    except Exception:
+        logger.exception("DB 감사 질의 실패")
+
+    try:
+        raw_count = _count_s3_prefix(storage, "raw/")
+        parsed_count = _count_s3_prefix(storage, "parsed/")
+        audit["pending_raw"] = raw_count
+        audit["pending_parsed"] = parsed_count
+        if raw_count > 50:
+            alerts.append(f"S3 raw/ 잔류 파일: {raw_count}건 (처리 지연 가능)")
+        if parsed_count > 50:
+            alerts.append(f"S3 parsed/ 잔류 파일: {parsed_count}건 (적재 지연 가능)")
+    except Exception:
+        logger.exception("S3 감사 조회 실패")
+
+    if alerts:
+        logger.warning("무결성 감사 이상 감지: %s", alerts)
+        try:
+            from core.notify import send_monitor_alert  # noqa: C0415
+
+            send_monitor_alert(
+                title="\U0001f50d 파이프라인 무결성 감사 결과",
+                description="\n".join(f"- {a}" for a in alerts),
+            )
+        except Exception:
+            logger.exception("감사 알림 전송 실패")
+    else:
+        logger.info("무결성 감사 통과: %s", audit)
+
+    return audit
+
+
+def _count_s3_prefix(storage, prefix: str) -> int:
+    """S3 프리픽스 하위 객체 수를 센다."""
+    paginator = storage.s3.get_paginator("list_objects_v2")
+    count = 0
+    for page in paginator.paginate(Bucket=storage.bucket, Prefix=prefix):
+        count += page.get("KeyCount", 0)
+    return count
 
 
 # ── news_collector (cron) ──
