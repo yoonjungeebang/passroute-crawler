@@ -27,7 +27,7 @@ def search_api(event, context):
     from search.naver_realtime import _make_session, search_news  # noqa: C0415
     from search.pgvector_search import search_jobs  # noqa: C0415
 
-    t_total = time.time()
+    t_total = time.monotonic()
     metrics = MetricsLogger(function_name="search_api")
 
     params = event.get("queryStringParameters") or {}
@@ -38,11 +38,11 @@ def search_api(event, context):
     if not query:
         return api_error(400, "q 파라미터가 필요합니다.")
 
-    t0 = time.time()
+    t0 = time.monotonic()
     query_embedding = embed_text(query)
     metrics.put_duration("EmbeddingDuration", t0)
 
-    t0 = time.time()
+    t0 = time.monotonic()
     pg = get_pg_storage()
     pg._ensure_alive()
     job_results = search_jobs(pg.conn, query_embedding, limit=limit, company=company)
@@ -52,7 +52,7 @@ def search_api(event, context):
     for job in job_results:
         job["similarity"] = round(float(job["similarity"]), 4)
 
-    t0 = time.time()
+    t0 = time.monotonic()
     search_query = f"{company} {query}" if company else query
     client_id, client_secret = get_naver_credentials()
     naver_session = _make_session(client_id, client_secret)
@@ -92,7 +92,7 @@ def company_collect(event, context):
     from crawler.robots_check import RobotsChecker  # noqa: C0415
     from search.naver_realtime import _make_session, filter_webkr_results, search_webkr  # noqa: C0415
 
-    t_total = time.time()
+    t_total = time.monotonic()
     metrics = MetricsLogger(function_name="company_collect")
 
     params = event.get("queryStringParameters") or {}
@@ -105,7 +105,7 @@ def company_collect(event, context):
     news_saved = []
 
     # ── 1. 뉴스 수집 ──
-    t0 = time.time()
+    t0 = time.monotonic()
     client_id, client_secret = get_naver_credentials()
     news_collector_inst = NaverNewsCollector(
         client_id=client_id,
@@ -142,7 +142,7 @@ def company_collect(event, context):
     logger.info("뉴스 수집: company=%s, %d건", company, len(news_items))
 
     # ── 2. 기술 블로그 수집 ──
-    t0 = time.time()
+    t0 = time.monotonic()
     _MAX_KEYWORDS = 10
     keywords_param = params.get("keywords", "").strip()
     keyword_list = [kw.strip()[:50] for kw in keywords_param.split(",") if kw.strip()][:_MAX_KEYWORDS]

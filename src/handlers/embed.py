@@ -16,7 +16,7 @@ def embed_worker(event, context):
     from core.embedding import build_document, embed_text  # noqa: C0415
     from core.metrics import MetricsLogger  # noqa: C0415
 
-    t_total = time.time()
+    t_total = time.monotonic()
     metrics = MetricsLogger(function_name="embed_worker")
     embed_count = 0
     embed_fail_count = 0
@@ -48,7 +48,7 @@ def embed_worker(event, context):
 
         embedding_failed = False
         try:
-            t0 = time.time()
+            t0 = time.monotonic()
             document = build_document(data["raw_text"], tuple(data.get("tech_stack", [])))
             embedding = embed_text(document)
             metrics.put_duration("EmbeddingDuration", t0)

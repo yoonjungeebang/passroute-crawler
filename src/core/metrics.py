@@ -11,7 +11,7 @@ CloudWatch 가 자동으로 메트릭을 추출한다. 별도 API 호출이 없�
     metrics = MetricsLogger(function_name="search_api")
     metrics.set_dimension("Source", "jumpit")
 
-    t0 = time.time()
+    t0 = time.monotonic()
     result = embed_text(query)
     metrics.put_duration("EmbeddingDuration", t0)
 
@@ -51,12 +51,14 @@ class MetricsLogger:
         self._values[name] = value
 
     def put_duration(self, name: str, start_time: float) -> float:
-        """start_time 부터 현재까지의 경과 시간을 밀리초 단위로 기록한다.
+        """start_time(time.monotonic()) 부터 현재까지의 경과 시간을 밀리초 단위로 기록한다.
+
+        단조 시계(monotonic clock)를 사용해야 NTP 보정에 의한 시간 점프 영향을 받지 않는다.
 
         Returns:
             경과 시간(밀리초)
         """
-        elapsed_ms = (time.time() - start_time) * 1000
+        elapsed_ms = (time.monotonic() - start_time) * 1000
         self.put_metric(name, round(elapsed_ms, 1), "Milliseconds")
         return elapsed_ms
 

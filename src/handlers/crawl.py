@@ -18,7 +18,7 @@ def job_crawl(event, context):
     """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장."""
     from core.metrics import MetricsLogger  # noqa: C0415
 
-    t_total = time.time()
+    t_total = time.monotonic()
     metrics = MetricsLogger(function_name="job_crawl")
     crawl_count = 0
     storage = make_storage()
