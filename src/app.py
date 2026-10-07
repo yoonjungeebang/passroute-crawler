@@ -12,27 +12,25 @@ Stage 3 - Load:
 """
 
 # ── 공통 의존성 re-export (테스트의 @patch("app.xxx") 경로 유지) ──
-import boto3  # noqa: F401
-from storage.s3 import S3Storage  # noqa: F401
+import boto3
+from storage.s3 import S3Storage
 
-from handlers._common import get_pg_storage as _get_pg_storage  # noqa: F401
-from handlers._common import make_storage as _make_storage  # noqa: F401
+from handlers._common import get_pg_storage as _get_pg_storage
+from handlers._common import make_storage as _make_storage
 
 # ── 크롤러 레지스트리 re-export (테스트의 @patch("app.get_crawler") 등) ──
-from crawler.registry import get_crawler, iter_sources  # noqa: F401
+from crawler.registry import get_crawler, iter_sources
 
 # ── 핸들러 함수 re-export ──
-from handlers.collect import (  # noqa: F401
+from handlers.collect import (
     job_list_collector,
     source_collect_worker,
     url_index_rebuilder,
-    news_collector,
-    blog_collector,
 )
-from handlers.crawl import job_crawl  # noqa: F401
-from handlers.embed import embed_worker  # noqa: F401
-from handlers.load import db_loader  # noqa: F401
-from handlers.api import search_api, company_collect  # noqa: F401
+from handlers.crawl import job_crawl
+from handlers.embed import embed_worker
+from handlers.load import db_loader
+from handlers.api import search_api, company_collect
 
 # ── time re-export (테스트의 @patch("app.time.sleep")) ──
-import time  # noqa: F401
+import time
