@@ -1,0 +1,489 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  passroute-crawler — 3단계 크롤링 파이프라인 (crawl → embed → load)
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: 크롤링 데이터 중간 저장 S3 버킷명
+    Default: passroute-crawler-data-0607
+  BaseImageUri:
+    Type: String
+    Description: Lambda 베이스 Docker 이미지 URI (ECR)
+    Default: ''
+  # ── Secrets Manager ARN ──
+  DatabaseSecretArn:
+    Type: String
+    Description: RDS 접속 정보가 저장된 Secrets Manager ARN
+    NoEcho: true
+  NaverApiSecretArn:
+    Type: String
+    Description: 네이버 API 크레덴셜이 저장된 Secrets Manager ARN
+    NoEcho: true
+  SuperookieApiSecretArn:
+    Type: String
+    Description: 슈퍼루키 API 액세스 토큰이 저장된 Secrets Manager ARN
+    NoEcho: true
+    Default: ''
+  DiscordWebhookSecretArn:
+    Type: String
+    Description: Discord 웹훅 URL이 저장된 Secrets Manager ARN (#dlq 채널)
+    NoEcho: true
+    Default: ''
+  DiscordMonitorWebhookSecretArn:
+    Type: String
+    Description: Discord #monitor 채널 웹훅 URL이 저장된 Secrets Manager ARN
+    NoEcho: true
+    Default: ''
+  JwtSecretArn:
+    Type: String
+    Description: JWT 서명 검증용 시크릿(Base64)이 저장된 Secrets Manager ARN
+    NoEcho: true
+    Default: ''
+  CorsAllowOrigin:
+    Type: String
+    Description: API Gateway CORS 허용 오리진 (프론트엔드 도메인)
+    Default: "'https://passroute.site'"
+Globals:
+  Function:
+    Architectures:
+      - x86_64
+    Timeout: 300
+    LoggingConfig:
+      LogFormat: JSON
+      LogRetentionInDays: 30
+    Environment:
+      Variables:
+        S3_BUCKET: !Ref CrawlerDataBucket
+
+Resources:
+  # ── VPC (Nested Stack) ──
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: vpc.yaml
+
+  # ── S3: 크롤링 데이터 중간 저장 버킷 (보안 강화) ──
+  CrawlerDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanupFailedPrefix
+            Prefix: failed/
+            Status: Enabled
+            ExpirationInDays: 30
+          - Id: CleanupRawPrefix
+            Prefix: raw/
+            Status: Enabled
+            ExpirationInDays: 7
+          - Id: CleanupParsedPrefix
+            Prefix: parsed/
+            Status: Enabled
+            ExpirationInDays: 3
+          - Id: CleanupArchivePrefix
+            Prefix: archive/
+            Status: Enabled
+            ExpirationInDays: 14
+
+  # ── 메시징 (Nested Stack) ──
+  MessagingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: messaging.yaml
+      Parameters:
+        CrawlerDataBucketName: !Ref CrawlerDataBucket
+
+  # ── Stage 1: 목록 수집 디스패처 (cron → 소스별 SQS 메시지) ──
+  JobListCollector:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.job_list_collector
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          SOURCE_COLLECT_QUEUE_URL: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.SourceCollectQueueName
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/delete-requests/*"
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 18 * * ? *)
+            Enabled: true
+
+  # ── Stage 1: 소스별 목록 수집 워커 (SQS 트리거) ──
+  SourceCollectWorker:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.source_collect_worker
+      Timeout: 900
+      ReservedConcurrentExecutions: 3
+      MemorySize: 512
+      VpcConfig:
+        SubnetIds:
+          - !GetAtt VPCStack.Outputs.PrivateSubnetA
+          - !GetAtt VPCStack.Outputs.PrivateSubnetB
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+      Environment:
+        Variables:
+          JOB_DETAIL_QUEUE_URL: !GetAtt MessagingStack.Outputs.JobDetailQueueUrl
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+          DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
+          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.JobDetailQueueName
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref DiscordMonitorWebhookSecretArn
+                - !Ref SuperookieApiSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessagingStack.Outputs.SourceCollectQueueArn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  # ── Stage 1: 상세 크롤러 (Tier 2 HTML/API 크롤링) ──
+  JobCrawler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.job_crawl
+      Timeout: 120
+      MemorySize: 512
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
+          DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/raw/*"
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref SuperookieApiSecretArn
+                - !Ref DiscordMonitorWebhookSecretArn
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessagingStack.Outputs.JobDetailQueueArn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  # ── Stage 2: 통합 임베딩 워커 (SQS 트리거, Docker 이미지) ──
+  EmbedWorker:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Timeout: 120
+      MemorySize: 2048
+      ReservedConcurrentExecutions: 5
+      ImageConfig:
+        Command:
+          - app.embed_worker
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/raw/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/parsed/*"
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/raw/*"
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessagingStack.Outputs.EmbedQueueArn
+            BatchSize: 3
+            MaximumBatchingWindowInSeconds: 30
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+    Metadata:
+      DockerTag: python3.11
+      DockerContext: ..
+      Dockerfile: src/Dockerfile
+      DockerBuildArgs:
+        BASE_IMAGE: !Ref BaseImageUri
+
+  # ── Stage 3: DB 로더 (SQS 트리거, S3 parsed/ 이벤트 → PostgreSQL) ──
+  DbLoader:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.db_loader
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 5
+      VpcConfig:
+        SubnetIds:
+          - !GetAtt VPCStack.Outputs.PrivateSubnetA
+          - !GetAtt VPCStack.Outputs.PrivateSubnetB
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+      Environment:
+        Variables:
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/parsed/*"
+                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/delete-requests/*"
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/parsed/*"
+                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/delete-requests/*"
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DatabaseSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessagingStack.Outputs.DbLoadQueueArn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  # ── Phase 4: 검색 API (API Gateway) ──
+  SearchApi:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerTag: search-api
+      DockerContext: ..
+      Dockerfile: src/Dockerfile
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command:
+          - app.search_api
+      Timeout: 30
+      MemorySize: 2048
+      ReservedConcurrentExecutions: 10
+      VpcConfig:
+        SubnetIds:
+          - !GetAtt VPCStack.Outputs.PrivateSubnetA
+          - !GetAtt VPCStack.Outputs.PrivateSubnetB
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+      Environment:
+        Variables:
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+          NAVER_API_SECRET_ARN: !Ref NaverApiSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref NaverApiSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        SearchGet:
+          Type: Api
+          Properties:
+            Path: /v1/search
+            Method: get
+            RestApiId: !Ref PassrouteApi
+
+  # ── 기업별 실시간 수집 API (API Gateway) ──
+  CompanyCollector:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.company_collect
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrentExecutions: 5
+      VpcConfig:
+        SubnetIds:
+          - !GetAtt VPCStack.Outputs.PrivateSubnetA
+          - !GetAtt VPCStack.Outputs.PrivateSubnetB
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+      Environment:
+        Variables:
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+          NAVER_API_SECRET_ARN: !Ref NaverApiSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecretArn
+                - !Ref NaverApiSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        CollectGet:
+          Type: Api
+          Properties:
+            Path: /v1/company-data
+            Method: get
+            RestApiId: !Ref PassrouteApi
+
+  # ── JWT Lambda Authorizer ──
+  JwtAuthorizer:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: authorizer.handler
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:${JwtSecretArn}:SecretString:jwt_secret}}'
+
+  PassrouteApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: !Ref CorsAllowOrigin
+      Auth:
+        DefaultAuthorizer: JwtLambdaAuthorizer
+        Authorizers:
+          JwtLambdaAuthorizer:
+            FunctionArn: !GetAtt JwtAuthorizer.Arn
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 300
+
+  # ── 모니터링 (Nested Stack) ──
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: monitoring.yaml
+      Parameters:
+        DiscordWebhookSecretArn: !Ref DiscordWebhookSecretArn
+        JobDetailDLQArn: !GetAtt MessagingStack.Outputs.JobDetailDLQArn
+        JobDetailDLQQueueName: !GetAtt MessagingStack.Outputs.JobDetailDLQQueueName
+        SourceCollectDLQArn: !GetAtt MessagingStack.Outputs.SourceCollectDLQArn
+        SourceCollectDLQQueueName: !GetAtt MessagingStack.Outputs.SourceCollectDLQQueueName
+        EmbedDLQArn: !GetAtt MessagingStack.Outputs.EmbedDLQArn
+        EmbedDLQQueueName: !GetAtt MessagingStack.Outputs.EmbedDLQQueueName
+        DbLoadDLQArn: !GetAtt MessagingStack.Outputs.DbLoadDLQArn
+        DbLoadDLQQueueName: !GetAtt MessagingStack.Outputs.DbLoadDLQQueueName
+        # ── 성능 메트릭 알람용 ──
+        SearchApiFunctionName: !Ref SearchApi
+        EmbedWorkerFunctionName: !Ref EmbedWorker
+        CompanyCollectorFunctionName: !Ref CompanyCollector
+        JobDetailQueueName: !GetAtt MessagingStack.Outputs.JobDetailQueueName
+        EmbedQueueName: !GetAtt MessagingStack.Outputs.EmbedQueueName
+
+Outputs:
+  JobListCollectorArn:
+    Description: 목록 수집 Lambda ARN
+    Value: !GetAtt JobListCollector.Arn
+  JobCrawlerArn:
+    Description: 상세 크롤링 Lambda ARN
+    Value: !GetAtt JobCrawler.Arn
+  JobDetailQueueUrl:
+    Description: 상세 SQS Queue URL
+    Value: !GetAtt MessagingStack.Outputs.JobDetailQueueUrl
+  CrawlerDataBucketName:
+    Description: 크롤링 데이터 S3 버킷명
+    Value: !Ref CrawlerDataBucket
+  EmbedWorkerArn:
+    Description: 임베딩 워커 Lambda ARN
+    Value: !GetAtt EmbedWorker.Arn
+  EmbedQueueUrl:
+    Description: 임베딩 SQS Queue URL
+    Value: !GetAtt MessagingStack.Outputs.EmbedQueueUrl
+  DbLoaderArn:
+    Description: DB 로더 Lambda ARN
+    Value: !GetAtt DbLoader.Arn
+  DbLoadQueueUrl:
+    Description: DB 로드 SQS Queue URL
+    Value: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
+  SourceCollectWorkerArn:
+    Description: 소스별 수집 워커 Lambda ARN
+    Value: !GetAtt SourceCollectWorker.Arn
+  SourceCollectQueueUrl:
+    Description: 소스별 수집 SQS Queue URL
+    Value: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
+  SearchApiUrl:
+    Description: 검색 API 엔드포인트 URL
+    Value: !Sub "https://${PassrouteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/search"
+  CompanyCollectorArn:
+    Description: 기업별 실시간 수집 Lambda ARN
+    Value: !GetAtt CompanyCollector.Arn
+  CompanyDataApiUrl:
+    Description: 기업별 데이터 수집 API 엔드포인트 URL
+    Value: !Sub "https://${PassrouteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/company-data"
+  DLQAlarmTopicArn:
+    Description: DLQ 알람 SNS 토픽 ARN
+    Value: !GetAtt MonitoringStack.Outputs.DLQAlarmTopicArn
+  # ── VPC ──
+  VpcId:
+    Description: VPC ID
+    Value: !GetAtt VPCStack.Outputs.VpcId
+  PrivateSubnetIds:
+    Description: Private Subnet IDs (RDS 서브넷 그룹용)
+    Value: !Join
+      - ","
+      - - !GetAtt VPCStack.Outputs.PrivateSubnetA
+        - !GetAtt VPCStack.Outputs.PrivateSubnetB
+  LambdaSecurityGroupId:
+    Description: Lambda 보안 그룹 ID (RDS 보안 그룹에서 인바운드 허용용)
+    Value: !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+  # ── Grafana Cloud ──
+  GrafanaCredentialSecretArn:
+    Description: Grafana Cloud 크레덴셜이 저장된 Secrets Manager ARN
+    Value: !GetAtt MonitoringStack.Outputs.GrafanaCredentialSecretArn
