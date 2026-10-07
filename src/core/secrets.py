@@ -55,6 +55,13 @@ def get_discord_webhook_url() -> str:
     return s["webhook_url"]
 
 
+def get_discord_monitor_webhook_url() -> str:
+    """DISCORD_MONITOR_WEBHOOK_SECRET_ARN에서 #monitor 채널 웹훅 URL 반환."""
+    arn = os.environ["DISCORD_MONITOR_WEBHOOK_SECRET_ARN"]
+    s = get_secret(arn)
+    return s["webhook_url"]
+
+
 def get_superookie_access_token() -> str:
     """SUPEROOKIE_API_SECRET_ARN에서 액세스 토큰 반환."""
     arn = os.environ["SUPEROOKIE_API_SECRET_ARN"]

@@ -2,8 +2,6 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from botocore.exceptions import ClientError
-
 from crawler.base import JobDetail
 from storage.s3 import S3Storage
 
@@ -15,46 +13,13 @@ def _detail(**overrides) -> JobDetail:
         url="https://www.jobkorea.co.kr/Recruit/GI_Read/999",
         company_name="패스루트",
         title="백엔드 채용",
-        raw_text="주요업무: 백엔드 개발",
+        raw_text="주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         tech_stack=("Python", "AWS"),
         deadline="2026-05-01T23:59:59+09:00",
         crawled_at="2026-04-11T18:00:00+09:00",
     )
     base.update(overrides)
     return JobDetail(**base)
-
-
-@patch("storage.s3.boto3.client")
-def test_get_all_urls_returns_urls_from_index(mock_boto_client):
-    """url-index.json 이 존재하면 URL set 을 반환한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-
-    body_content = json.dumps({"urls": ["https://a.com", "https://b.com"]})
-    mock_s3.get_object.return_value = {
-        "Body": MagicMock(read=lambda: body_content.encode("utf-8")),
-    }
-
-    storage = S3Storage(bucket="test-bucket")
-    urls = storage.get_all_urls()
-
-    assert urls == {"https://a.com", "https://b.com"}
-    mock_s3.get_object.assert_called_once_with(Bucket="test-bucket", Key="url-index.json")
-
-
-@patch("storage.s3.boto3.client")
-def test_get_all_urls_returns_empty_set_when_no_index(mock_boto_client):
-    """url-index.json 이 없으면 빈 set 을 반환한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-
-    error_response = {"Error": {"Code": "NoSuchKey", "Message": "Not found"}}
-    mock_s3.get_object.side_effect = ClientError(error_response, "GetObject")
-
-    storage = S3Storage(bucket="test-bucket")
-    urls = storage.get_all_urls()
-
-    assert urls == set()
 
 
 @patch("storage.s3.boto3.client")

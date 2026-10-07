@@ -5,12 +5,37 @@ import uuid
 from datetime import datetime
 
 import boto3
-from botocore.exceptions import ClientError
 
 from core import KST
 from crawler.base import JobDetail
 
 logger = logging.getLogger(__name__)
+
+_REQUIRED_RAW_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "source": str,
+    "external_id": str,
+    "url": str,
+    "company_name": str,
+    "title": str,
+    "raw_text": str,
+    "tech_stack": list,
+    "deadline": (str, int),
+    "crawled_at": str,
+}
+
+
+def validate_raw_schema(data: dict) -> list[str]:
+    """raw JSON 데이터의 스키마를 검증한다. 위반 목록을 반환."""
+    errors: list[str] = []
+    for field, expected_type in _REQUIRED_RAW_FIELDS.items():
+        if field not in data:
+            errors.append(f"필수 필드 누락: {field}")
+        elif not isinstance(data[field], expected_type):
+            errors.append(
+                f"타입 불일치: {field}={type(data[field]).__name__} "
+                f"(expected: {expected_type})"
+            )
+    return errors
 
 
 class S3Storage:
@@ -18,18 +43,6 @@ class S3Storage:
     def __init__(self, bucket: str):
         self.bucket = bucket
         self.s3 = boto3.client("s3")
-
-    def get_all_urls(self) -> set[str]:
-        """S3 의 url-index.json 에서 기존 URL 목록을 가져온다."""
-        try:
-            resp = self.s3.get_object(Bucket=self.bucket, Key="url-index.json")
-            data = json.loads(resp["Body"].read().decode("utf-8"))
-            return set(data.get("urls", []))
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
-                logger.info("url-index.json 없음, 빈 set 반환 (첫 실행)")
-                return set()
-            raise
 
     def save(self, detail: JobDetail, *, embedding: list[float] | None = None) -> None:
         """크롤링 결과를 parsed/{source}/{external_id}.json 으로 S3 에 저장."""
@@ -68,6 +81,11 @@ class S3Storage:
             "crawled_at": detail.crawled_at,
             "career_level": detail.career_level,
         }
+        errors = validate_raw_schema(data)
+        if errors:
+            logger.error("스키마 검증 실패: %s, errors=%s", detail.external_id, errors)
+            raise ValueError(f"스키마 검증 실패 ({detail.external_id}): {errors}")
+
         body = json.dumps(data, ensure_ascii=False)
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body.encode("utf-8"))
         logger.info("S3 raw 저장 완료: %s", key)

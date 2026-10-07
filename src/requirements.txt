@@ -6,3 +6,4 @@ onnxruntime
 transformers
 numpy<2
 psycopg2-binary
+PyJWT

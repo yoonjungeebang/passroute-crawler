@@ -33,7 +33,7 @@ def _raw_json_data(**overrides) -> dict:
         "url": "https://www.jobkorea.co.kr/Recruit/GI_Read/123",
         "company_name": "A사",
         "title": "백엔드",
-        "raw_text": "주요업무: 개발",
+        "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
         "deadline": "2026-05-01",
         "crawled_at": "2026-04-12T18:00:00+09:00",
@@ -79,7 +79,12 @@ def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
     assert saved_body["embedding"] == [0.1] * 768
     assert saved_body["source"] == "jobkorea"
 
-    # raw/ 삭제
+    # raw/ 아카이브 후 삭제
+    mock_s3.copy_object.assert_called_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": "raw/jobkorea/123.json"},
+        Key="archive/raw/jobkorea/123.json",
+    )
     mock_s3.delete_object.assert_called_once_with(
         Bucket="test-bucket", Key="raw/jobkorea/123.json",
     )
@@ -104,6 +109,8 @@ def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_
     saved_body = json.loads(put_call.kwargs["Body"].decode("utf-8"))
     assert "embedding" not in saved_body
 
+    # raw/ 아카이브 후 삭제
+    mock_s3.copy_object.assert_called_once()
     mock_s3.delete_object.assert_called_once()
 
 
@@ -146,9 +153,14 @@ def test_embed_worker_skips_already_processed(mock_boto_client):
 
     assert result["statusCode"] == 200
 
-    # 임베딩 처리 없이 raw/ 만 삭제
+    # 임베딩 처리 없이 raw/ 아카이브 후 삭제
     mock_s3.get_object.assert_not_called()
     mock_s3.put_object.assert_not_called()
+    mock_s3.copy_object.assert_called_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": "raw/jobkorea/123.json"},
+        Key="archive/raw/jobkorea/123.json",
+    )
     mock_s3.delete_object.assert_called_once_with(
         Bucket="test-bucket", Key="raw/jobkorea/123.json",
     )

@@ -8,6 +8,7 @@ stack_name = "passroute-crawler"
 [default.build.parameters]
 cached = true
 parallel = true
+template_file = "infra/template.yaml"
 
 [default.validate.parameters]
 lint = true

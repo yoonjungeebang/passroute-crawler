@@ -10,6 +10,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from core.circuit_breaker import CircuitOpenError, get_breaker
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,20 @@ class JobDetail:
     deadline: str
     crawled_at: str
     career_level: str = ""
+
+    def __post_init__(self):
+        for field_name in ("source", "external_id", "url", "company_name", "title"):
+            value = getattr(self, field_name)
+            if not value or not str(value).strip():
+                raise ValueError(
+                    f"JobDetail.{field_name}이 비어있음: "
+                    f"source={self.source}, id={self.external_id}"
+                )
+        if len(self.raw_text.strip()) < 20:
+            raise ValueError(
+                f"raw_text가 너무 짧음({len(self.raw_text.strip())}자): "
+                f"source={self.source}, id={self.external_id}"
+            )
 
 
 DEFAULT_DELAY_MIN = 1.0
@@ -82,6 +98,7 @@ class JobCrawler(ABC):
         self.max_pages = max_pages
         self.stale_page_threshold = stale_page_threshold
         self.exclude_title_keywords = exclude_title_keywords
+        self._breaker = get_breaker(self.source)
 
     @abstractmethod
     def fetch_listings_page(self, page: int) -> list[JobListingRef]: ...
@@ -97,7 +114,11 @@ class JobCrawler(ABC):
 
         for page in range(1, self.max_pages + 1):
             try:
-                refs = self.fetch_listings_page(page)
+                with self._breaker:
+                    refs = self.fetch_listings_page(page)
+            except CircuitOpenError:
+                logger.warning("서킷 OPEN, 목록 수집 조기 종료: source=%s", self.source)
+                break
             except Exception:
                 logger.exception("목록 요청 실패: source=%s page=%d", self.source, page)
                 break

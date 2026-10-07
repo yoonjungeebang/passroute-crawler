@@ -14,6 +14,7 @@ from crawler.base import (
     JobListingRef,
     make_crawler_session,
 )
+from crawler.validation import CrawlValidationError, require_keys, require_non_empty
 from parser.common import normalize_tech_name
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,12 @@ class JumpitCrawler(JobCrawler):
             logger.exception("점핏 상세 요청 실패: id=%s", pos_id)
             return None
 
+        ctx = f"jumpit detail {pos_id}"
+        require_keys(data, ["result"], context=ctx)
         result = data.get("result") or {}
+        require_keys(result, ["title", "companyName"], context=ctx)
+        require_non_empty(result.get("title"), "title", context=ctx)
+
         parts = [result.get("title") or ref.title]
 
         qualifications = result.get("qualifications", "")

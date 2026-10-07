@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  passroute-crawler 모니터링 (DLQ 알람 + Discord 알림)
+
+Parameters:
+  DiscordWebhookSecretArn:
+    Type: String
+    NoEcho: true
+  JobDetailDLQArn:
+    Type: String
+  JobDetailDLQQueueName:
+    Type: String
+  SourceCollectDLQArn:
+    Type: String
+  SourceCollectDLQQueueName:
+    Type: String
+  EmbedDLQArn:
+    Type: String
+  EmbedDLQQueueName:
+    Type: String
+  DbLoadDLQArn:
+    Type: String
+  DbLoadDLQQueueName:
+    Type: String
+  # ── 성능 메트릭 알람용 파라미터 ──
+  SearchApiFunctionName:
+    Type: String
+    Description: SearchApi Lambda 함수명 (Duration/Throttle 알람용)
+  EmbedWorkerFunctionName:
+    Type: String
+    Description: EmbedWorker Lambda 함수명 (Duration 알람용)
+  CompanyCollectorFunctionName:
+    Type: String
+    Description: CompanyCollector Lambda 함수명 (Duration 알람용)
+  JobDetailQueueName:
+    Type: String
+    Description: JobDetail SQS 큐명 (메시지 체류 시간 알람용)
+  EmbedQueueName:
+    Type: String
+    Description: Embed SQS 큐명 (메시지 체류 시간 알람용)
+
+Resources:
+  # ── SNS 토픽 ──
+  DLQAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: passroute-dlq-alarm
+      DisplayName: passroute DLQ Alarm
+
+  # ── Discord 알림 Lambda ──
+  DLQDiscordNotifier:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: core.notify.discord_notifier
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_SECRET_ARN: !Ref DiscordWebhookSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DiscordWebhookSecretArn
+      Events:
+        SNSTrigger:
+          Type: SNS
+          Properties:
+            Topic: !Ref DLQAlarmTopic
+
+  # ── DLQ 일일 점검 Lambda ──
+  DLQDailyCheck:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: core.notify.dlq_daily_check
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_SECRET_ARN: !Ref DiscordWebhookSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:GetQueueAttributes
+              Resource:
+                - !Ref JobDetailDLQArn
+                - !Ref SourceCollectDLQArn
+                - !Ref EmbedDLQArn
+                - !Ref DbLoadDLQArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sts:GetCallerIdentity
+              Resource: "*"
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DiscordWebhookSecretArn
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 21 * * ? *)
+            Enabled: true
+
+  # ── CloudWatch 알람 ──
+  JobDetailDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-job-detail-dlq-has-messages
+      AlarmDescription: passroute job detail DLQ에 메시지가 쌓여 있음 (상세 크롤링 실패 누적)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref JobDetailDLQQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  SourceCollectDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-source-collect-dlq-has-messages
+      AlarmDescription: passroute source collect DLQ에 메시지가 쌓여 있음 (소스별 수집 실패)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref SourceCollectDLQQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  EmbedDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-embed-dlq-has-messages
+      AlarmDescription: passroute embed DLQ에 메시지가 쌓여 있음 (임베딩 실패 누적)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref EmbedDLQQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  DbLoadDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-db-load-dlq-has-messages
+      AlarmDescription: passroute DB load DLQ에 메시지가 쌓여 있음 (DB 적재 실패 누적)
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref DbLoadDLQQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  # ── 성능 메트릭 알람: Lambda Duration p95 ──
+
+  SearchApiDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-search-api-duration-p95
+      AlarmDescription: >
+        검색 API p95 응답 시간이 10초를 초과함.
+        콜드 스타트 또는 DB 쿼리 지연을 점검할 것.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SearchApiFunctionName
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  EmbedWorkerDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-embed-worker-duration-p95
+      AlarmDescription: >
+        임베딩 워커 p95 실행 시간이 60초를 초과함.
+        ONNX 모델 추론 또는 S3 I/O 지연을 점검할 것.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref EmbedWorkerFunctionName
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 60000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  CompanyCollectDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-company-collect-duration-p95
+      AlarmDescription: >
+        기업 수집 API p95 응답 시간이 30초를 초과함.
+        네이버 API 또는 블로그 크롤링 지연을 점검할 것.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CompanyCollectorFunctionName
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 30000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  # ── 성능 메트릭 알람: Lambda Throttle ──
+
+  SearchApiThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-search-api-throttled
+      AlarmDescription: >
+        검색 API에서 스로틀링이 발생함.
+        ReservedConcurrentExecutions 상향을 검토할 것.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SearchApiFunctionName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  # ── 성능 메트릭 알람: Lambda 에러율 ──
+
+  SearchApiErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-search-api-error-rate
+      AlarmDescription: >
+        검색 API 에러율이 5%를 초과함.
+        Lambda 로그에서 에러 원인을 확인할 것.
+      Namespace: AWS/Lambda
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SearchApiFunctionName
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SearchApiFunctionName
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: error_rate
+          Expression: "IF(invocations > 0, errors / invocations * 100, 0)"
+          Label: "Error Rate (%)"
+          ReturnData: true
+      EvaluationPeriods: 3
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  # ── 성능 메트릭 알람: SQS 메시지 체류 시간 ──
+
+  JobDetailQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-job-detail-queue-message-age
+      AlarmDescription: >
+        상세 크롤링 큐에서 메시지가 30분 이상 체류 중.
+        크롤링 처리 속도가 수집 속도를 따라가지 못하고 있음.
+        job_crawl 동시성 상향을 검토할 것.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref JobDetailQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1800
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  EmbedQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: passroute-embed-queue-message-age
+      AlarmDescription: >
+        임베딩 큐에서 메시지가 30분 이상 체류 중.
+        임베딩 처리가 병목이 되고 있음.
+        embed_worker 동시성 또는 BatchSize 상향을 검토할 것.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref EmbedQueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1800
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DLQAlarmTopic
+      OKActions:
+        - !Ref DLQAlarmTopic
+
+  # ── Grafana Cloud 연동용 IAM ──
+  GrafanaCloudUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: passroute-grafana-cloud
+      Policies:
+        - PolicyName: GrafanaCloudWatchReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarmsForMetric
+                  - cloudwatch:DescribeAlarmHistory
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:GetInsightRuleReport
+                Resource: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:passroute-*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:GetMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace:
+                      - AWS/Lambda
+                      - AWS/SQS
+                      - AWS/S3
+                      - Passroute
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:GetLogGroupFields
+                  - logs:StartQuery
+                  - logs:StopQuery
+                  - logs:GetQueryResults
+                  - logs:GetLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/passroute-*"
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/aws:cloudformation:stack-name: passroute-crawler
+
+  GrafanaCloudAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref GrafanaCloudUser
+
+  GrafanaCloudSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: passroute/grafana-cloud-credentials
+      Description: Grafana Cloud 연동용 IAM 크레덴셜
+      SecretString: !Sub |
+        {"access_key_id":"${GrafanaCloudAccessKey}","secret_access_key":"${GrafanaCloudAccessKey.SecretAccessKey}"}
+
+Outputs:
+  DLQAlarmTopicArn:
+    Description: DLQ 알람 SNS 토픽 ARN
+    Value: !Ref DLQAlarmTopic
+  GrafanaCredentialSecretArn:
+    Description: Grafana Cloud 크레덴셜이 저장된 Secrets Manager ARN
+    Value: !Ref GrafanaCloudSecret

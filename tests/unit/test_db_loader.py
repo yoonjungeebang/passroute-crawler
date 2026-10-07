@@ -33,7 +33,7 @@ def _parsed_json_data(**overrides) -> dict:
         "url": "https://www.jobkorea.co.kr/Recruit/GI_Read/123",
         "company_name": "A사",
         "title": "백엔드",
-        "raw_text": "주요업무: 개발",
+        "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
         "deadline": "2026-05-01",
         "crawled_at": "2026-04-12T18:00:00+09:00",
@@ -73,6 +73,12 @@ def test_db_loader_saves_parsed_file(mock_boto_client, mock_get_pg):
     assert saved_detail.tech_stack == ("Python",)
     assert mock_pg.save.call_args.kwargs["embedding"] == [0.1] * 768
 
+    # parsed/ 아카이브 후 삭제
+    mock_s3.copy_object.assert_called_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": "parsed/jobkorea/123.json"},
+        Key="archive/parsed/jobkorea/123.json",
+    )
     mock_s3.delete_object.assert_called_once_with(
         Bucket="test-bucket", Key="parsed/jobkorea/123.json",
     )
@@ -97,6 +103,13 @@ def test_db_loader_processes_delete_request(mock_boto_client, mock_get_pg):
     app.db_loader(event, None)
 
     mock_pg.delete_expired.assert_called_once_with(1776164400)
+
+    # delete-requests/ 아카이브 후 삭제
+    mock_s3.copy_object.assert_called_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": "delete-requests/20260412T180000.json"},
+        Key="archive/delete-requests/20260412T180000.json",
+    )
     mock_s3.delete_object.assert_called_once_with(
         Bucket="test-bucket", Key="delete-requests/20260412T180000.json",
     )

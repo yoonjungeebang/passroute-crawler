@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from core import KST
+from crawler.validation import CrawlValidationError, require_keys
 from crawler.base import (
     DEFAULT_DELAY_MAX,
     DEFAULT_DELAY_MIN,
@@ -92,7 +93,11 @@ class SuperookieCrawler(JobCrawler):
             logger.exception("슈퍼루키 상세 요청 실패: id=%s", job_id)
             return None
 
+        ctx = f"superookie detail {job_id}"
+        require_keys(data, ["data"], context=ctx)
         job = data.get("data") or data
+        require_keys(job, ["job_title"], context=ctx)
+
         parts = [job.get("job_title") or ref.title]
 
         custom_field = job.get("custom_field", "")

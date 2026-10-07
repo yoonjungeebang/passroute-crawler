@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 @pytest.fixture(autouse=True)
 def _reset_module_state():
     """secrets 캐시와 app 글로벌 상태를 테스트마다 초기화."""
+    import core.circuit_breaker as cb_mod
     import core.secrets as secrets_mod
 
     import app as app_mod
@@ -25,10 +26,12 @@ def _reset_module_state():
     secrets_mod._cache.clear()
     secrets_mod._client = None
     app_mod._pg_storage = None
+    cb_mod._registry.clear()
     yield
     secrets_mod._cache.clear()
     secrets_mod._client = None
     app_mod._pg_storage = None
+    cb_mod._registry.clear()
 
 
 @pytest.fixture(autouse=True)
