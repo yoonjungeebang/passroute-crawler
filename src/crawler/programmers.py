@@ -125,11 +125,11 @@ class ProgrammersCrawler(JobCrawler):
         return f"{min_career}~{max_career}년"
 
     @staticmethod
-    def _parse_deadline(deadline_str: str) -> str:
+    def _parse_deadline(deadline_str: str) -> int:
         if not deadline_str:
-            return ""
+            return 0
         try:
             dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-            return str(int(dt.timestamp()))
+            return int(dt.timestamp())
         except (ValueError, TypeError):
-            return ""
+            return 0

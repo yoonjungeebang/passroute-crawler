@@ -48,10 +48,10 @@ class SuperookieCrawler(JobCrawler):
         params = {
             "page": page,
             "per_page": 20,
-            "access_token": _get_access_token(),
         }
+        headers = {"Authorization": f"Bearer {_get_access_token()}"}
         try:
-            resp = self.session.get(f"{_API_BASE}/jobs", params=params, timeout=15)
+            resp = self.session.get(f"{_API_BASE}/jobs", params=params, headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -84,9 +84,9 @@ class SuperookieCrawler(JobCrawler):
     def fetch_detail(self, ref: JobListingRef) -> JobDetail | None:
         """슈퍼루키 채용공고 상세 — 목록 API 에 상세 정보가 포함되어 있으므로 재호출."""
         job_id = ref.external_id.replace("superookie_", "")
-        params = {"access_token": _get_access_token()}
+        headers = {"Authorization": f"Bearer {_get_access_token()}"}
         try:
-            resp = self.session.get(f"{_API_BASE}/jobs/{job_id}", params=params, timeout=15)
+            resp = self.session.get(f"{_API_BASE}/jobs/{job_id}", headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -116,7 +116,7 @@ class SuperookieCrawler(JobCrawler):
         if not raw_text.strip() or raw_text.strip() == ref.title:
             return None
 
-        deadline = ""
+        deadline = 0
         if not job.get("is_until_recruit", False):
             end_at = job.get("end_at", "") or job.get("close_at", "") or job.get("deadline_at", "")
             if end_at:
@@ -143,9 +143,9 @@ class SuperookieCrawler(JobCrawler):
         return str(level_id)
 
     @staticmethod
-    def _parse_deadline(date_str: str) -> str:
+    def _parse_deadline(date_str: str) -> int:
         try:
             dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-            return str(int(dt.timestamp()))
+            return int(dt.timestamp())
         except (ValueError, TypeError):
-            return ""
+            return 0

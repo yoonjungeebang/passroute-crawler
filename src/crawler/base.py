@@ -36,14 +36,14 @@ class JobDetail:
     title: str
     raw_text: str
     tech_stack: tuple[str, ...]
-    deadline: str
+    deadline: int
     crawled_at: str
     career_level: str = ""
 
     def __post_init__(self):
         for field_name in ("source", "external_id", "url", "company_name", "title"):
             value = getattr(self, field_name)
-            if not value or not str(value).strip():
+            if value is None or not str(value).strip():
                 raise ValueError(
                     f"JobDetail.{field_name}이 비어있음: "
                     f"source={self.source}, id={self.external_id}"

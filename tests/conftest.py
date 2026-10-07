@@ -21,16 +21,16 @@ def _reset_module_state():
     import core.circuit_breaker as cb_mod
     import core.secrets as secrets_mod
 
-    import app as app_mod
+    import handlers._common as common_mod
 
     secrets_mod._cache.clear()
     secrets_mod._client = None
-    app_mod._pg_storage = None
+    common_mod._pg_storage = None
     cb_mod._registry.clear()
     yield
     secrets_mod._cache.clear()
     secrets_mod._client = None
-    app_mod._pg_storage = None
+    common_mod._pg_storage = None
     cb_mod._registry.clear()
 
 

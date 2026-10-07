@@ -1,0 +1,116 @@
+"""Lambda 핸들러: DB 로더 (SQS 트리거, S3 parsed/ 이벤트)."""
+import dataclasses
+import json
+import logging
+import time
+from datetime import datetime
+
+import boto3
+from botocore.exceptions import ClientError
+
+from crawler.base import JobDetail
+from storage.s3 import validate_raw_schema
+
+from ._common import archive_and_delete, get_pg_storage
+
+logger = logging.getLogger(__name__)
+
+
+def db_loader(event, context):
+    """SQS 트리거. S3 PutObject 이벤트 → parsed/ DB 저장 또는 delete-requests/ 만료 삭제.
+
+    SQS at-least-once 특성상 동일 메시지가 재전달될 수 있다.
+    실패한 레코드만 batchItemFailures로 반환하여 성공한 메시지의 불필요한
+    재처리를 방지한다. DB 쓰기 자체는 UPSERT로 멱등적이다.
+    """
+    from core.metrics import MetricsLogger  # noqa: C0415
+
+    t_total = time.monotonic()
+    metrics = MetricsLogger(function_name="db_loader")
+    load_count = 0
+    failures: list[dict] = []
+    s3 = boto3.client("s3")
+    pg = get_pg_storage()
+
+    for record in event["Records"]:
+        envelope = json.loads(record["body"])
+        bucket = envelope["detail"]["bucket"]["name"]
+        key = envelope["detail"]["object"]["key"]
+
+        try:
+            if key.startswith("parsed/") and key.endswith(".json"):
+                t0 = time.monotonic()
+                _load_parsed_file(s3, bucket, key, pg)
+                metrics.put_duration("DbWriteDuration", t0)
+                load_count += 1
+            elif key.startswith("delete-requests/") and key.endswith(".json"):
+                _load_delete_request(s3, bucket, key, pg)
+        except Exception:
+            logger.exception("레코드 처리 실패: key=%s", key)
+            failures.append({"itemIdentifier": record["messageId"]})
+
+    metrics.put_duration("TotalDuration", t_total)
+    metrics.put_count("LoadedCount", load_count)
+    metrics.flush()
+    return {"statusCode": 200, "batchItemFailures": failures}
+
+
+def _load_parsed_file(s3, bucket, key, pg):
+    """S3 parsed JSON 1건 → PgVectorStorage.save() → S3 삭제.
+
+    SQS at-least-once 특성상 동일 메시지가 재전달될 수 있다.
+    UPSERT(ON CONFLICT DO UPDATE)로 멱등성이 보장되므로 중복 처리 시에도
+    데이터 오염은 발생하지 않는다.
+    """
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            logger.info("이미 처리된 키, 스킵(SQS 재전달 가능): %s", key)
+            return
+        raise
+    data = json.loads(resp["Body"].read().decode("utf-8"))
+
+    trace_id = data.get("trace_id", "")
+
+    schema_errors = validate_raw_schema(data)
+    if schema_errors:
+        logger.error(
+            "DB 적재 전 스키마 검증 실패: key=%s trace_id=%s errors=%s",
+            key, trace_id, schema_errors,
+        )
+        archive_and_delete(s3, bucket, key)
+        return
+
+    field_names = {f.name for f in dataclasses.fields(JobDetail)}
+    kwargs = {k: v for k, v in data.items() if k in field_names}
+    kwargs.setdefault("career_level", "")
+    kwargs.setdefault("deadline", 0)
+    if "tech_stack" in kwargs:
+        kwargs["tech_stack"] = tuple(kwargs["tech_stack"])
+    detail = JobDetail(**kwargs)
+    embedding = data.get("embedding")
+    embedding_status = data.get("embedding_status", "ok")
+    pg.save(detail, embedding=embedding, embedding_status=embedding_status)
+    archive_and_delete(s3, bucket, key)
+    logger.info("DB 적재 완료: %s trace_id=%s", key, trace_id)
+
+
+def _load_delete_request(s3, bucket, key, pg):
+    """S3 delete-request JSON 1건 → PgVectorStorage.delete_expired() → S3 삭제."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            logger.info("이미 처리된 삭제 요청, 스킵(SQS 재전달 가능): %s", key)
+            return
+        raise
+    data = json.loads(resp["Body"].read().decode("utf-8"))
+
+    now_ts = data.get("now_ts")
+    if now_ts is None:
+        now_ts = int(datetime.fromisoformat(data["now_iso"]).timestamp())
+
+    deleted = pg.delete_expired(now_ts)
+    archive_and_delete(s3, bucket, key)
+    logger.info("만료 공고 삭제 완료: %d건, key=%s", deleted, key)

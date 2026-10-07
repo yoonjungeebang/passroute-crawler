@@ -28,58 +28,61 @@ def _make_session(api_key_id: str, api_key: str) -> requests.Session:
     return session
 
 
-def search_news(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
-    """네이버 API HUB 뉴스 검색 실시간 호출."""
+def _search(
+    session: requests.Session,
+    url: str,
+    query: str,
+    label: str,
+    *,
+    display: int = 10,
+    extra_params: dict | None = None,
+    item_mapper=None,
+) -> list[dict]:
+    """네이버 API HUB 검색 공통 로직."""
     breaker = get_breaker("naver_search_api")
+    params = {"query": query, "display": display}
+    if extra_params:
+        params.update(extra_params)
     try:
         with breaker:
-            resp = session.get(_NEWS_URL, params={
-                "query": query,
-                "display": display,
-                "sort": "date",
-            }, timeout=5)
+            resp = session.get(url, params=params, timeout=5)
             resp.raise_for_status()
             data = resp.json()
     except Exception:
-        logger.exception("네이버 뉴스 검색 실패: query=%s", query)
+        logger.exception("네이버 %s 검색 실패: query=%s", label, query)
         return []
 
-    return [
-        {
+    return [item_mapper(item) for item in data.get("items", [])]
+
+
+def search_news(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
+    """네이버 API HUB 뉴스 검색 실시간 호출."""
+    return _search(
+        session, _NEWS_URL, query, "뉴스",
+        display=display,
+        extra_params={"sort": "date"},
+        item_mapper=lambda item: {
             "title": strip_html(item.get("title", "")),
             "description": strip_html(item.get("description", "")),
             "url": item.get("originallink") or item.get("link", ""),
             "pub_date": item.get("pubDate", ""),
             "source": "naver_news",
-        }
-        for item in data.get("items", [])
-    ]
+        },
+    )
 
 
 def search_webkr(session: requests.Session, query: str, *, display: int = 10) -> list[dict]:
     """네이버 API HUB 웹문서 검색 실시간 호출. 기술 블로그 등 웹 문서를 검색한다."""
-    breaker = get_breaker("naver_search_api")
-    try:
-        with breaker:
-            resp = session.get(_WEBKR_URL, params={
-                "query": query,
-                "display": display,
-            }, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        logger.exception("네이버 웹문서 검색 실패: query=%s", query)
-        return []
-
-    return [
-        {
+    return _search(
+        session, _WEBKR_URL, query, "웹문서",
+        display=display,
+        item_mapper=lambda item: {
             "title": strip_html(item.get("title", "")),
             "description": strip_html(item.get("description", "")),
             "url": item.get("link", ""),
             "source": "naver_webkr",
-        }
-        for item in data.get("items", [])
-    ]
+        },
+    )
 
 
 # ── 웹문서 검색 결과 필터링 ──

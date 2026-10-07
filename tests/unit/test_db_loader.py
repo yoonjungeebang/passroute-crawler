@@ -4,6 +4,7 @@ S3, PgVectorStorage, Secrets Manager 는 mock 으로 대체한다.
 EventBridge S3 이벤트가 SQS 로 래핑된 형태의 이벤트를 입력으로 사용한다.
 """
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 import app
 
 
-def _make_s3_event(bucket: str, key: str) -> dict:
+def _make_s3_event(bucket: str, key: str, message_id: str = "msg-001") -> dict:
     """EventBridge S3 이벤트를 SQS 로 래핑한 형태의 이벤트를 생성한다."""
     envelope = {
         "version": "0",
@@ -22,7 +23,7 @@ def _make_s3_event(bucket: str, key: str) -> dict:
             "object": {"key": key, "size": 1234},
         },
     }
-    return {"Records": [{"body": json.dumps(envelope)}]}
+    return {"Records": [{"messageId": message_id, "body": json.dumps(envelope)}]}
 
 
 def _parsed_json_data(**overrides) -> dict:
@@ -35,7 +36,7 @@ def _parsed_json_data(**overrides) -> dict:
         "title": "백엔드",
         "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
-        "deadline": "2026-05-01",
+        "deadline": 1777648000,
         "crawled_at": "2026-04-12T18:00:00+09:00",
         "career_level": "",
         "embedding": [0.1] * 768,
@@ -52,8 +53,8 @@ def _mock_s3_get_object(mock_s3: MagicMock, data: dict) -> None:
     }
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
 def test_db_loader_saves_parsed_file(mock_boto_client, mock_get_pg):
     """parsed/ 이벤트 시 PgVectorStorage.save() 가 호출되고 S3 객체가 삭제된다."""
     mock_s3 = MagicMock()
@@ -84,8 +85,8 @@ def test_db_loader_saves_parsed_file(mock_boto_client, mock_get_pg):
     )
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
 def test_db_loader_processes_delete_request(mock_boto_client, mock_get_pg):
     """delete-requests/ 이벤트 시 PgVectorStorage.delete_expired() 가 호출된다."""
     mock_s3 = MagicMock()
@@ -102,7 +103,9 @@ def test_db_loader_processes_delete_request(mock_boto_client, mock_get_pg):
     event = _make_s3_event("test-bucket", "delete-requests/20260412T180000.json")
     app.db_loader(event, None)
 
-    mock_pg.delete_expired.assert_called_once_with(1776164400)
+    call_arg = mock_pg.delete_expired.call_args.args[0]
+    assert isinstance(call_arg, int)
+    assert call_arg == 1776164400
 
     # delete-requests/ 아카이브 후 삭제
     mock_s3.copy_object.assert_called_once_with(
@@ -115,8 +118,8 @@ def test_db_loader_processes_delete_request(mock_boto_client, mock_get_pg):
     )
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
 def test_db_loader_skips_non_json(mock_boto_client, mock_get_pg):
     """.json 이 아닌 키는 무시한다."""
     mock_s3 = MagicMock()
@@ -132,10 +135,10 @@ def test_db_loader_skips_non_json(mock_boto_client, mock_get_pg):
     mock_s3.get_object.assert_not_called()
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
-def test_db_loader_reraises_on_failure(mock_boto_client, mock_get_pg):
-    """에러 발생 시 SQS 재시도를 위해 예외가 전파된다."""
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
+def test_db_loader_reports_failure_in_batch_item_failures(mock_boto_client, mock_get_pg):
+    """에러 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
     mock_s3 = MagicMock()
     mock_boto_client.return_value = mock_s3
     mock_s3.get_object.side_effect = RuntimeError("S3 접근 실패")
@@ -145,12 +148,13 @@ def test_db_loader_reraises_on_failure(mock_boto_client, mock_get_pg):
 
     event = _make_s3_event("test-bucket", "parsed/jobkorea/123.json")
 
-    with pytest.raises(RuntimeError, match="S3 접근 실패"):
-        app.db_loader(event, None)
+    result = app.db_loader(event, None)
+    assert len(result["batchItemFailures"]) == 1
+    assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
 def test_db_loader_handles_legacy_now_iso(mock_boto_client, mock_get_pg):
     """기존 now_iso 형식의 삭제 요청도 timestamp 로 변환하여 처리한다."""
     mock_s3 = MagicMock()
@@ -171,8 +175,8 @@ def test_db_loader_handles_legacy_now_iso(mock_boto_client, mock_get_pg):
     assert isinstance(call_args, int)
 
 
-@patch("app._get_pg_storage")
-@patch("app.boto3.client")
+@patch("handlers.load.get_pg_storage")
+@patch("handlers.load.boto3.client")
 def test_db_loader_skips_unknown_prefix(mock_boto_client, mock_get_pg):
     """parsed/ 또는 delete-requests/ 가 아닌 경로는 무시한다."""
     mock_s3 = MagicMock()

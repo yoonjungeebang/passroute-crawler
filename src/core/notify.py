@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import time
+import urllib.error
 import urllib.request
 
 import boto3
@@ -18,8 +20,11 @@ _DLQ_QUEUES = (
 )
 
 
-def _send_discord(webhook_url: str, payload: dict) -> None:
-    """Discord 웹훅으로 payload 를 전송한다."""
+def _send_discord(webhook_url: str, payload: dict, *, max_retries: int = 2) -> None:
+    """Discord 웹훅으로 payload 를 전송한다.
+
+    일시적 네트워크 장애에 대비해 지수 백오프로 재시도한다.
+    """
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         webhook_url,
@@ -30,8 +35,18 @@ def _send_discord(webhook_url: str, payload: dict) -> None:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        logger.info("Discord 알림 전송 완료: status=%d", resp.status)
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                logger.info("Discord 알림 전송 완료: status=%d", resp.status)
+                return
+        except (urllib.error.URLError, OSError):
+            if attempt < max_retries:
+                delay = (attempt + 1) ** 2
+                logger.warning("Discord 전송 실패, %.0f초 후 재시도 %d/%d", delay, attempt + 1, max_retries)
+                time.sleep(delay)
+            else:
+                raise
 
 
 def discord_notifier(event, _context):

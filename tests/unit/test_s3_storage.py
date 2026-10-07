@@ -15,7 +15,7 @@ def _detail(**overrides) -> JobDetail:
         title="백엔드 채용",
         raw_text="주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         tech_stack=("Python", "AWS"),
-        deadline="2026-05-01T23:59:59+09:00",
+        deadline=1777734399,
         crawled_at="2026-04-11T18:00:00+09:00",
     )
     base.update(overrides)

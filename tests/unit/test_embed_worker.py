@@ -35,7 +35,7 @@ def _raw_json_data(**overrides) -> dict:
         "title": "백엔드",
         "raw_text": "주요업무: 백엔드 서비스 개발 및 운영\n자격요건: Python 3년 이상",
         "tech_stack": ["Python"],
-        "deadline": "2026-05-01",
+        "deadline": 1777648000,
         "crawled_at": "2026-04-12T18:00:00+09:00",
         "career_level": "",
     }
@@ -58,7 +58,7 @@ def _mock_head_object_not_found(mock_s3: MagicMock) -> None:
 
 
 @patch("core.embedding.embed_text", return_value=[0.1] * 768)
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
     """raw/ JSON 을 읽어 임베딩 후 parsed/ 에 저장하고 raw/ 를 삭제한다."""
     mock_s3 = MagicMock()
@@ -91,7 +91,7 @@ def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
 
 
 @patch("core.embedding.embed_text", side_effect=RuntimeError("model error"))
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_embed):
     """임베딩 실패 시에도 parsed/ 에 임베딩 없이 저장하고 raw/ 를 삭제한다."""
     mock_s3 = MagicMock()
@@ -114,7 +114,7 @@ def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_
     mock_s3.delete_object.assert_called_once()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_non_raw_key(mock_boto_client):
     """raw/ 가 아닌 키는 무시한다."""
     mock_s3 = MagicMock()
@@ -127,7 +127,7 @@ def test_embed_worker_skips_non_raw_key(mock_boto_client):
     mock_s3.get_object.assert_not_called()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_non_json_key(mock_boto_client):
     """raw/ 이지만 .json 이 아닌 키는 무시한다."""
     mock_s3 = MagicMock()
@@ -140,11 +140,14 @@ def test_embed_worker_skips_non_json_key(mock_boto_client):
     mock_s3.get_object.assert_not_called()
 
 
-@patch("app.boto3.client")
+@patch("handlers.embed.boto3.client")
 def test_embed_worker_skips_already_processed(mock_boto_client):
     """parsed/ 에 이미 파일이 존재하면 임베딩을 건너뛰고 raw/ 만 삭제한다."""
     mock_s3 = MagicMock()
     mock_boto_client.return_value = mock_s3
+    # get_object로 raw 데이터를 먼저 읽고 parsed_key를 확정한 뒤 head_object로 중복 검사
+    data = _raw_json_data()
+    _mock_s3_get_object(mock_s3, data)
     # head_object 성공 = parsed/ 파일 존재
     mock_s3.head_object.return_value = {}
 
@@ -153,8 +156,8 @@ def test_embed_worker_skips_already_processed(mock_boto_client):
 
     assert result["statusCode"] == 200
 
-    # 임베딩 처리 없이 raw/ 아카이브 후 삭제
-    mock_s3.get_object.assert_not_called()
+    # raw 데이터는 읽지만 임베딩·저장 없이 아카이브 후 삭제
+    mock_s3.get_object.assert_called_once()
     mock_s3.put_object.assert_not_called()
     mock_s3.copy_object.assert_called_once_with(
         Bucket="test-bucket",
