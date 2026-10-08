@@ -4,10 +4,6 @@ Description: >
   passroute-crawler — 3단계 크롤링 파이프라인 (crawl → embed → load)
 
 Parameters:
-  S3BucketName:
-    Type: String
-    Description: 크롤링 데이터 중간 저장 S3 버킷명
-    Default: passroute-crawler-data-0607
   BaseImageUri:
     Type: String
     Description: Lambda 베이스 Docker 이미지 URI (ECR)
@@ -53,9 +49,6 @@ Globals:
     LoggingConfig:
       LogFormat: JSON
       LogRetentionInDays: 30
-    Environment:
-      Variables:
-        S3_BUCKET: !Ref CrawlerDataBucket
 
 Resources:
   # ── VPC (Nested Stack) ──
@@ -64,49 +57,11 @@ Resources:
     Properties:
       TemplateURL: vpc.yaml
 
-  # ── S3: 크롤링 데이터 중간 저장 버킷 (보안 강화) ──
-  CrawlerDataBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Ref S3BucketName
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      NotificationConfiguration:
-        EventBridgeConfiguration:
-          EventBridgeEnabled: true
-      LifecycleConfiguration:
-        Rules:
-          - Id: CleanupFailedPrefix
-            Prefix: failed/
-            Status: Enabled
-            ExpirationInDays: 30
-          - Id: CleanupRawPrefix
-            Prefix: raw/
-            Status: Enabled
-            ExpirationInDays: 7
-          - Id: CleanupParsedPrefix
-            Prefix: parsed/
-            Status: Enabled
-            ExpirationInDays: 3
-          - Id: CleanupArchivePrefix
-            Prefix: archive/
-            Status: Enabled
-            ExpirationInDays: 14
-
   # ── 메시징 (Nested Stack) ──
   MessagingStack:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: messaging.yaml
-      Parameters:
-        CrawlerDataBucketName: !Ref CrawlerDataBucket
 
   # ── Stage 1: 목록 수집 디스패처 (cron → 소스별 SQS 메시지) ──
   JobListCollector:
@@ -121,13 +76,12 @@ Resources:
       Environment:
         Variables:
           SOURCE_COLLECT_QUEUE_URL: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
+          DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.SourceCollectQueueName
-        - Statement:
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/delete-requests/*"
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
       Events:
         DailySchedule:
           Type: Schedule
@@ -177,7 +131,7 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
 
-  # ── Stage 1: 상세 크롤러 (Tier 2 HTML/API 크롤링) ──
+  # ── Stage 1: 상세 크롤러 → SQS(EmbedQueue) 전송 ──
   JobCrawler:
     Type: AWS::Serverless::Function
     Properties:
@@ -189,13 +143,13 @@ Resources:
       ReservedConcurrentExecutions: 5
       Environment:
         Variables:
+          EMBED_QUEUE_URL: !GetAtt MessagingStack.Outputs.EmbedQueueUrl
           SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
           DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
       Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.EmbedQueueName
         - Statement:
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/raw/*"
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource:
@@ -210,7 +164,7 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
 
-  # ── Stage 2: 통합 임베딩 워커 (SQS 트리거, Docker 이미지) ──
+  # ── Stage 2: 임베딩 워커 → SQS(DbLoadQueue) 전송 ──
   EmbedWorker:
     Type: AWS::Serverless::Function
     Properties:
@@ -218,24 +172,15 @@ Resources:
       Timeout: 120
       MemorySize: 2048
       ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
       ImageConfig:
         Command:
           - app.embed_worker
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:DeleteObject
-              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/raw/*"
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:PutObject
-              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/parsed/*"
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/raw/*"
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
       Events:
         SQSTrigger:
           Type: SQS
@@ -252,7 +197,7 @@ Resources:
       DockerBuildArgs:
         BASE_IMAGE: !Ref BaseImageUri
 
-  # ── Stage 3: DB 로더 (SQS 트리거, S3 parsed/ 이벤트 → PostgreSQL) ──
+  # ── Stage 3: DB 로더 (SQS 트리거 → PostgreSQL) ──
   DbLoader:
     Type: AWS::Serverless::Function
     Properties:
@@ -271,20 +216,11 @@ Resources:
       Environment:
         Variables:
           DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+          CRAWL_COMPLETE_QUEUE_URL: !GetAtt MessagingStack.Outputs.CrawlCompleteQueueUrl
       Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.CrawlCompleteQueueName
         - Statement:
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-                - s3:DeleteObject
-              Resource:
-                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/parsed/*"
-                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/delete-requests/*"
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource:
-                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/parsed/*"
-                - !Sub "arn:aws:s3:::${CrawlerDataBucket}/archive/delete-requests/*"
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: !Ref DatabaseSecretArn
@@ -437,9 +373,6 @@ Outputs:
   JobDetailQueueUrl:
     Description: 상세 SQS Queue URL
     Value: !GetAtt MessagingStack.Outputs.JobDetailQueueUrl
-  CrawlerDataBucketName:
-    Description: 크롤링 데이터 S3 버킷명
-    Value: !Ref CrawlerDataBucket
   EmbedWorkerArn:
     Description: 임베딩 워커 Lambda ARN
     Value: !GetAtt EmbedWorker.Arn
