@@ -1,21 +1,24 @@
 """Lambda 핸들러: 상세 크롤링 (SQS 트리거)."""
+import dataclasses
 import json
 import logging
 import random
 import time
+
+import boto3
 
 from core.circuit_breaker import CircuitOpenError, get_breaker
 from crawler.base import JobDetail, JobListingRef
 from crawler.registry import get_crawler
 from crawler.validation import CrawlValidationError
 
-from ._common import make_storage
+from ._common import required_env
 
 logger = logging.getLogger(__name__)
 
 
 def job_crawl(event, context):
-    """SQS 트리거. 공고 1건 상세 크롤링 → S3(raw/) 저장.
+    """SQS 트리거. 공고 1건 상세 크롤링 → EmbedQueue 로 전송.
 
     실패한 레코드만 batchItemFailures로 반환하여 성공한 메시지의
     불필요한 재처리를 방지한다. CircuitOpenError는 일시적 장애이므로
@@ -27,11 +30,13 @@ def job_crawl(event, context):
     metrics = MetricsLogger(function_name="job_crawl")
     crawl_count = 0
     failures: list[dict] = []
-    storage = make_storage()
+    sqs = boto3.client("sqs")
+    embed_queue_url = required_env("EMBED_QUEUE_URL")
 
     for record in event["Records"]:
         message = json.loads(record["body"])
         trace_id = message.get("trace_id", "")
+        request_id = message.get("request_id", "")
         ref = JobListingRef(
             source=message["source"],
             external_id=message["external_id"],
@@ -54,7 +59,15 @@ def job_crawl(event, context):
                 logger.info("상세 정보 없음, 스킵: id=%s", ref.external_id)
                 continue
 
-            storage.save_raw(detail, trace_id=trace_id)
+            body = _detail_to_dict(detail)
+            if trace_id:
+                body["trace_id"] = trace_id
+            if request_id:
+                body["request_id"] = request_id
+            sqs.send_message(
+                QueueUrl=embed_queue_url,
+                MessageBody=json.dumps(body, ensure_ascii=False),
+            )
             crawl_count += 1
         except CrawlValidationError as e:
             logger.error("크롤링 검증 실패: %s", e)
@@ -103,3 +116,10 @@ def job_crawl(event, context):
     metrics.put_count("CrawledCount", crawl_count)
     metrics.flush()
     return {"statusCode": 200, "batchItemFailures": failures}
+
+
+def _detail_to_dict(detail: JobDetail) -> dict:
+    """JobDetail → JSON-safe dict."""
+    data = dataclasses.asdict(detail)
+    data["tech_stack"] = list(detail.tech_stack)
+    return data

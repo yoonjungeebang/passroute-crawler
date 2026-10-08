@@ -1,22 +1,20 @@
 """passroute-crawler Lambda 핸들러 진입점.
 
-SAM template.yaml 의 Handler 가 app.xxx 를 참조하므로,
+Handler 가 app.xxx 를 참조하므로,
 각 handlers 모듈에서 핸들러 함수와 필요한 이름을 re-export 한다.
 
 Stage 1 - Crawl:
-  EventBridge cron → [job_list_collector] → SQS → [job_crawl] → S3(raw/)
+  EventBridge cron → [job_list_collector] → SQS → [job_crawl] → SQS(EmbedQueue)
 Stage 2 - Embed:
-  S3(raw/) → EventBridge → SQS → [embed_worker] → S3(parsed/)
+  SQS(EmbedQueue) → [embed_worker] → SQS(DbLoadQueue)
 Stage 3 - Load:
-  S3(parsed/) → EventBridge → SQS → [db_loader] → PostgreSQL(pgvector)
+  SQS(DbLoadQueue) → [db_loader] → PostgreSQL(pgvector)
 """
 
 # ── 공통 의존성 re-export (테스트의 @patch("app.xxx") 경로 유지) ──
 import boto3
-from storage.s3 import S3Storage
 
 from handlers._common import get_pg_storage as _get_pg_storage
-from handlers._common import make_storage as _make_storage
 
 # ── 크롤러 레지스트리 re-export (테스트의 @patch("app.get_crawler") 등) ──
 from crawler.registry import get_crawler, iter_sources
@@ -26,6 +24,8 @@ from handlers.collect import (
     job_list_collector,
     source_collect_worker,
     url_index_rebuilder,
+    news_collector,
+    blog_collector,
 )
 from handlers.crawl import job_crawl
 from handlers.embed import embed_worker

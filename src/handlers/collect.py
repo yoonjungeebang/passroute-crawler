@@ -10,7 +10,7 @@ from core import KST
 from crawler.base import JobListingRef
 from crawler.registry import get_crawler, iter_sources
 
-from ._common import SQS_BATCH_SIZE, get_pg_storage, make_storage, required_env
+from ._common import SQS_BATCH_SIZE, get_pg_storage, required_env
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +19,22 @@ logger = logging.getLogger(__name__)
 
 
 def job_list_collector(event, context):
-    """마감 공고 삭제 → 소스별 수집 메시지를 SourceCollectQueue 로 발행."""
+    """마감 공고 삭제 요청 → 소스별 수집 메시지를 SourceCollectQueue 로 발행."""
     sqs = boto3.client("sqs")
-    storage = make_storage()
     source_queue_url = required_env("SOURCE_COLLECT_QUEUE_URL")
+    db_load_queue_url = required_env("DB_LOAD_QUEUE_URL")
 
-    delete_requested = storage.delete_expired(datetime.now(KST).isoformat())
+    now_ts = int(datetime.now(KST).timestamp())
+    timestamp = datetime.now(KST).strftime("%Y%m%dT%H%M%S")
+    sqs.send_message(
+        QueueUrl=db_load_queue_url,
+        MessageBody=json.dumps({
+            "type": "delete_expired",
+            "now_ts": now_ts,
+            "requested_at": timestamp,
+        }),
+    )
+    logger.info("만료 삭제 요청 전송: now_ts=%d", now_ts)
 
     sources = list(iter_sources())
     for source in sources:
@@ -38,7 +48,7 @@ def job_list_collector(event, context):
         "statusCode": 200,
         "body": json.dumps({
             "dispatched_sources": sources,
-            "delete_requested": delete_requested,
+            "delete_requested": True,
         }),
     }
 
@@ -46,6 +56,7 @@ def job_list_collector(event, context):
 def source_collect_worker(event, context):
     """소스 1건 목록 수집 → 신규 공고 JobDetailQueue 전송.
 
+    메시지에 company_name 이 포함되면 해당 기업 공고만 필터링한다.
     Tier 2 크롤러는 robots.txt 를 사전 확인하여 차단 시 자동 스킵.
     """
     from crawler.robots_check import RobotsChecker  # noqa: C0415
@@ -60,6 +71,8 @@ def source_collect_worker(event, context):
     for record in event["Records"]:
         message = json.loads(record["body"])
         source = message["source"]
+        company_name = message.get("company_name")
+        request_id = message.get("request_id", "")
 
         try:
             crawler = get_crawler(source)
@@ -68,19 +81,33 @@ def source_collect_worker(event, context):
                 logger.warning("source=%s: robots.txt 차단, 스킵", source)
                 continue
 
-            logger.info("source=%s 목록 수집 시작", source)
+            logger.info("source=%s 목록 수집 시작 (company_name=%s)", source, company_name)
             refs = crawler.collect_listings()
+
+            if company_name:
+                refs = _filter_by_company(refs, company_name)
+                logger.info("source=%s company_name=%s 필터 후 %d건", source, company_name, len(refs))
 
             _check_listing_quality(source, refs)
             candidate_urls = [ref.url for ref in refs]
             existing_urls = pg.get_existing_urls(candidate_urls)
-            new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
+            new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls, request_id)
+
+            if request_id and company_name:
+                pg.init_source_progress(request_id, company_name, source, new_count)
+
             logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
         except Exception:
             logger.exception("source=%s 처리 실패", source)
             failures.append({"itemIdentifier": record["messageId"]})
 
     return {"statusCode": 200, "batchItemFailures": failures}
+
+
+def _filter_by_company(refs: list[JobListingRef], company_name: str) -> list[JobListingRef]:
+    """company_name 을 포함하는 공고만 필터링한다 (대소문자 무시)."""
+    keyword = company_name.lower()
+    return [ref for ref in refs if keyword in ref.company_name.lower()]
 
 
 def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
@@ -118,6 +145,7 @@ def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
 
 def _dispatch_new_listings(
     sqs, queue_url: str, refs: list[JobListingRef], existing_urls: set[str],
+    request_id: str = "",
 ) -> int:
     """신규 공고만 JobDetailQueue 로 배치 전송.
 
@@ -133,16 +161,19 @@ def _dispatch_new_listings(
             continue
 
         trace_id = uuid.uuid4().hex
+        body = {
+            "source": ref.source,
+            "external_id": ref.external_id,
+            "url": ref.url,
+            "company_name": ref.company_name,
+            "title": ref.title,
+            "trace_id": trace_id,
+        }
+        if request_id:
+            body["request_id"] = request_id
         batch.append({
             "Id": str(len(batch)),
-            "MessageBody": json.dumps({
-                "source": ref.source,
-                "external_id": ref.external_id,
-                "url": ref.url,
-                "company_name": ref.company_name,
-                "title": ref.title,
-                "trace_id": trace_id,
-            }, ensure_ascii=False),
+            "MessageBody": json.dumps(body, ensure_ascii=False),
         })
         new_count += 1
 
@@ -185,48 +216,26 @@ def _send_batch(sqs, queue_url: str, entries: list[dict]) -> int:
 # ── URL 인덱스 ──
 
 
-def _load_url_index(s3, bucket: str) -> set[str]:
-    """S3 의 url-index.json 을 읽어 기존 URL 집합을 반환."""
-    try:
-        resp = s3.get_object(Bucket=bucket, Key="url-index.json")
-        data = json.loads(resp["Body"].read().decode("utf-8"))
-        return set(data.get("urls", []))
-    except Exception:
-        logger.warning("url-index.json 로드 실패, 빈 집합으로 진행")
-        return set()
-
-
-# ── url_index_rebuilder (cron) ──
-
-
 def url_index_rebuilder(event, context):
     """PostgreSQL 의 전체 URL 을 url-index.json 으로 S3 에 저장.
 
     추가로 파이프라인 무결성 감사를 수행한다:
     - 임베딩 실패 레코드 수 확인 (embedding_status='failed')
-    - S3 raw/parsed 잔류 파일 수 확인 (처리 지연 또는 누락 감지)
     이상 발견 시 Discord #monitor 로 알림을 보낸다.
     """
     pg = get_pg_storage()
-    storage = make_storage()
 
     all_urls = pg.get_all_urls()
-    body = json.dumps({"urls": sorted(all_urls)}, ensure_ascii=False)
-    storage.s3.put_object(
-        Bucket=storage.bucket,
-        Key="url-index.json",
-        Body=body.encode("utf-8"),
-    )
-    logger.info("URL 인덱스 재구축 완료: %d건", len(all_urls))
+    logger.info("URL 인덱스 조회 완료: %d건", len(all_urls))
 
-    audit_result = _run_integrity_audit(pg, storage)
+    audit_result = _run_integrity_audit(pg)
 
     result = {"url_count": len(all_urls)}
     result.update(audit_result)
     return {"statusCode": 200, "body": json.dumps(result)}
 
 
-def _run_integrity_audit(pg, storage) -> dict:
+def _run_integrity_audit(pg) -> dict:
     """파이프라인 무결성 감사. 자가 검증(self-validation)으로 데이터 정합성을 확인."""
     audit = {}
     alerts: list[str] = []
@@ -247,18 +256,6 @@ def _run_integrity_audit(pg, storage) -> dict:
     except Exception:
         logger.exception("DB 감사 질의 실패")
 
-    try:
-        raw_count = _count_s3_prefix(storage, "raw/")
-        parsed_count = _count_s3_prefix(storage, "parsed/")
-        audit["pending_raw"] = raw_count
-        audit["pending_parsed"] = parsed_count
-        if raw_count > 50:
-            alerts.append(f"S3 raw/ 잔류 파일: {raw_count}건 (처리 지연 가능)")
-        if parsed_count > 50:
-            alerts.append(f"S3 parsed/ 잔류 파일: {parsed_count}건 (적재 지연 가능)")
-    except Exception:
-        logger.exception("S3 감사 조회 실패")
-
     if alerts:
         logger.warning("무결성 감사 이상 감지: %s", alerts)
         try:
@@ -276,12 +273,12 @@ def _run_integrity_audit(pg, storage) -> dict:
     return audit
 
 
-def _count_s3_prefix(storage, prefix: str) -> int:
-    """S3 프리픽스 하위 객체 수를 센다."""
-    paginator = storage.s3.get_paginator("list_objects_v2")
-    count = 0
-    for page in paginator.paginate(Bucket=storage.bucket, Prefix=prefix):
-        count += page.get("KeyCount", 0)
-    return count
+# ── 뉴스/블로그 수집 (re-export 유지) ──
 
 
+def news_collector(event, context):
+    pass
+
+
+def blog_collector(event, context):
+    pass

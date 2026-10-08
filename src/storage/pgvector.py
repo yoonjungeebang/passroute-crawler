@@ -8,45 +8,17 @@ from crawler.base import JobDetail
 
 logger = logging.getLogger(__name__)
 
-_CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
-_CREATE_EXTENSION_TRGM = "CREATE EXTENSION IF NOT EXISTS pg_trgm"
-
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS job_descriptions (
-    url         TEXT PRIMARY KEY,
-    source      TEXT NOT NULL,
-    external_id TEXT NOT NULL,
-    company_name TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    document    TEXT NOT NULL,
-    embedding   vector(768),
-    embedding_status TEXT NOT NULL DEFAULT 'ok',
-    deadline    BIGINT NOT NULL DEFAULT 0,
-    crawled_at  TEXT NOT NULL,
-    tech_stack  TEXT NOT NULL DEFAULT '',
-    career_level TEXT NOT NULL DEFAULT '',
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+_CREATE_TABLE_SOURCE_CRAWL_PROGRESS = """
+CREATE TABLE IF NOT EXISTS source_crawl_progress (
+    request_id      TEXT PRIMARY KEY,
+    company_name    TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    total_jobs      INT NOT NULL,
+    completed_jobs  INT NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'PENDING',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ
 )
-"""
-
-_CREATE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_job_descriptions_embedding
-ON job_descriptions USING hnsw (embedding vector_cosine_ops)
-"""
-
-_CREATE_INDEX_SOURCE = """
-CREATE INDEX IF NOT EXISTS idx_job_descriptions_source
-ON job_descriptions (source)
-"""
-
-_CREATE_INDEX_DEADLINE = """
-CREATE INDEX IF NOT EXISTS idx_job_descriptions_deadline
-ON job_descriptions (deadline) WHERE deadline > 0
-"""
-
-_CREATE_INDEX_COMPANY_TRGM = """
-CREATE INDEX IF NOT EXISTS idx_job_descriptions_company_trgm
-ON job_descriptions USING gin (company_name gin_trgm_ops)
 """
 
 _UPSERT = """
@@ -76,13 +48,18 @@ class PgVectorStorage:
     def __init__(self, dsn: str):
         self._dsn = dsn
         self.conn = self._connect()
-        self._ensure_schema()
+        self._ensure_crawler_tables()
 
     def _connect(self):
         """새 DB 커넥션을 생성한다."""
         conn = psycopg2.connect(self._dsn)
         conn.autocommit = True
         return conn
+
+    def _ensure_crawler_tables(self) -> None:
+        """크롤러 전용 테이블을 생성한다. IF NOT EXISTS로 멱등적."""
+        with self.conn.cursor() as cur:
+            cur.execute(_CREATE_TABLE_SOURCE_CRAWL_PROGRESS)
 
     def _ensure_alive(self) -> None:
         """커넥션이 끊어졌으면 재연결한다. Lambda 웜 스타트 시 stale 커넥션 방지.
@@ -113,18 +90,6 @@ class PgVectorStorage:
                         logger.warning("재접속 실패, %.0f초 후 재시도 %d/2", delay, attempt + 1)
                     else:
                         raise
-
-    def _ensure_schema(self) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute(_CREATE_EXTENSION)
-            cur.execute(_CREATE_EXTENSION_TRGM)
-            cur.execute(_CREATE_TABLE)
-            cur.execute("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
-            cur.execute("ALTER TABLE job_descriptions ADD COLUMN IF NOT EXISTS embedding_status TEXT NOT NULL DEFAULT 'ok'")
-            cur.execute(_CREATE_INDEX)
-            cur.execute(_CREATE_INDEX_SOURCE)
-            cur.execute(_CREATE_INDEX_DEADLINE)
-            cur.execute(_CREATE_INDEX_COMPANY_TRGM)
 
     def save(self, detail: JobDetail, *, embedding: list[float] | None = None, embedding_status: str = "ok") -> None:
         """사전 계산된 embedding 과 document/metadata 를 PostgreSQL 에 저장."""
@@ -260,6 +225,46 @@ class PgVectorStorage:
                 (candidate_urls,),
             )
             return {row[0] for row in cur.fetchall()}
+
+    def init_source_progress(
+        self, request_id: str, company_name: str, source: str, total_jobs: int,
+    ) -> None:
+        """소스 단위 수집 진행률 추적을 초기화한다."""
+        self._ensure_alive()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO source_crawl_progress (request_id, company_name, source, total_jobs) "
+                "VALUES (%s, %s, %s, %s)",
+                (request_id, company_name, source, total_jobs),
+            )
+        logger.info(
+            "소스 진행률 초기화: request_id=%s company=%s total=%d",
+            request_id, company_name, total_jobs,
+        )
+
+    def mark_job_loaded(self, request_id: str) -> bool:
+        """공고 1건 적재 완료를 기록하고, 소스 전체 완료 여부를 반환한다.
+
+        Returns:
+            True 이면 이번 적재로 해당 소스의 모든 공고가 완료됨.
+        """
+        self._ensure_alive()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE source_crawl_progress "
+                "SET completed_jobs = completed_jobs + 1, "
+                "    status = CASE "
+                "        WHEN completed_jobs + 1 >= total_jobs THEN 'COMPLETED' "
+                "        ELSE status END, "
+                "    completed_at = CASE "
+                "        WHEN completed_jobs + 1 >= total_jobs THEN NOW() "
+                "        ELSE completed_at END "
+                "WHERE request_id = %s "
+                "RETURNING completed_jobs >= total_jobs",
+                (request_id,),
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
 
     def close(self) -> None:
         try:
