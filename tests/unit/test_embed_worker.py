@@ -1,29 +1,17 @@
 """embed_worker Lambda 핸들러 단위 테스트.
 
-S3 와 임베딩 모듈은 mock 으로 대체한다.
-EventBridge S3 이벤트가 SQS 로 래핑된 형태의 이벤트를 입력으로 사용한다.
+SQS 와 임베딩 모듈은 mock 으로 대체한다.
+SQS 메시지에서 직접 크롤링 데이터를 수신하는 형태의 이벤트를 입력으로 사용한다.
 """
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-from botocore.exceptions import ClientError
-
 import app
 
 
-def _make_raw_event(bucket: str, key: str) -> dict:
-    """EventBridge S3 이벤트를 SQS 로 래핑한 형태의 이벤트를 생성한다."""
-    envelope = {
-        "version": "0",
-        "source": "aws.s3",
-        "detail-type": "Object Created",
-        "detail": {
-            "bucket": {"name": bucket},
-            "object": {"key": key},
-        },
-    }
-    return {"Records": [{"body": json.dumps(envelope)}]}
+def _make_sqs_event(data: dict, message_id: str = "msg-001") -> dict:
+    """SQS 메시지 이벤트를 생성한다."""
+    return {"Records": [{"messageId": message_id, "body": json.dumps(data)}]}
 
 
 def _raw_json_data(**overrides) -> dict:
@@ -43,127 +31,57 @@ def _raw_json_data(**overrides) -> dict:
     return base
 
 
-def _mock_s3_get_object(mock_s3: MagicMock, data: dict) -> None:
-    body_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    mock_s3.get_object.return_value = {
-        "Body": MagicMock(read=lambda: body_bytes),
-    }
-
-
-def _mock_head_object_not_found(mock_s3: MagicMock) -> None:
-    """parsed/ 파일이 존재하지 않는 상태를 설정 (정상 처리 경로)."""
-    mock_s3.head_object.side_effect = ClientError(
-        {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject",
-    )
-
-
 @patch("core.embedding.embed_text", return_value=[0.1] * 768)
 @patch("handlers.embed.boto3.client")
-def test_embed_worker_embeds_and_writes_parsed(mock_boto_client, mock_embed):
-    """raw/ JSON 을 읽어 임베딩 후 parsed/ 에 저장하고 raw/ 를 삭제한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-    _mock_head_object_not_found(mock_s3)
+def test_embed_worker_embeds_and_sends_to_db_load_queue(mock_boto_client, mock_embed):
+    """크롤링 데이터를 임베딩 후 DbLoadQueue 로 전송한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
     data = _raw_json_data()
-    _mock_s3_get_object(mock_s3, data)
 
-    event = _make_raw_event("test-bucket", "raw/jobkorea/123.json")
+    event = _make_sqs_event(data)
     result = app.embed_worker(event, None)
 
     assert result["statusCode"] == 200
 
-    # parsed/ 에 저장
-    put_call = mock_s3.put_object.call_args
-    assert put_call.kwargs["Key"] == "parsed/jobkorea/123.json"
-    saved_body = json.loads(put_call.kwargs["Body"].decode("utf-8"))
-    assert saved_body["embedding"] == [0.1] * 768
-    assert saved_body["source"] == "jobkorea"
-
-    # raw/ 아카이브 후 삭제
-    mock_s3.copy_object.assert_called_once_with(
-        Bucket="test-bucket",
-        CopySource={"Bucket": "test-bucket", "Key": "raw/jobkorea/123.json"},
-        Key="archive/raw/jobkorea/123.json",
-    )
-    mock_s3.delete_object.assert_called_once_with(
-        Bucket="test-bucket", Key="raw/jobkorea/123.json",
-    )
+    mock_sqs.send_message.assert_called_once()
+    sent_body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+    assert sent_body["embedding"] == [0.1] * 768
+    assert sent_body["embedding_status"] == "ok"
+    assert sent_body["type"] == "load"
+    assert sent_body["source"] == "jobkorea"
 
 
 @patch("core.embedding.embed_text", side_effect=RuntimeError("model error"))
 @patch("handlers.embed.boto3.client")
-def test_embed_worker_saves_without_embedding_on_failure(mock_boto_client, mock_embed):
-    """임베딩 실패 시에도 parsed/ 에 임베딩 없이 저장하고 raw/ 를 삭제한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-    _mock_head_object_not_found(mock_s3)
+def test_embed_worker_sends_without_embedding_on_failure(mock_boto_client, mock_embed):
+    """임베딩 실패 시에도 임베딩 없이 DbLoadQueue 로 전송한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
     data = _raw_json_data()
-    _mock_s3_get_object(mock_s3, data)
 
-    event = _make_raw_event("test-bucket", "raw/jobkorea/123.json")
+    event = _make_sqs_event(data)
     result = app.embed_worker(event, None)
 
     assert result["statusCode"] == 200
 
-    put_call = mock_s3.put_object.call_args
-    saved_body = json.loads(put_call.kwargs["Body"].decode("utf-8"))
-    assert "embedding" not in saved_body
-
-    # raw/ 아카이브 후 삭제
-    mock_s3.copy_object.assert_called_once()
-    mock_s3.delete_object.assert_called_once()
+    mock_sqs.send_message.assert_called_once()
+    sent_body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+    assert "embedding" not in sent_body
+    assert sent_body["embedding_status"] == "failed"
+    assert sent_body["type"] == "load"
 
 
 @patch("handlers.embed.boto3.client")
-def test_embed_worker_skips_non_raw_key(mock_boto_client):
-    """raw/ 가 아닌 키는 무시한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
+def test_embed_worker_reports_failure_in_batch_item_failures(mock_boto_client):
+    """레코드 처리 중 예외 발생 시 batchItemFailures 로 반환한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
+    mock_sqs.send_message.side_effect = RuntimeError("SQS 전송 실패")
 
-    event = _make_raw_event("test-bucket", "parsed/jobkorea/123.json")
-    result = app.embed_worker(event, None)
-
-    assert result["statusCode"] == 200
-    mock_s3.get_object.assert_not_called()
-
-
-@patch("handlers.embed.boto3.client")
-def test_embed_worker_skips_non_json_key(mock_boto_client):
-    """raw/ 이지만 .json 이 아닌 키는 무시한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-
-    event = _make_raw_event("test-bucket", "raw/jobkorea/readme.txt")
-    result = app.embed_worker(event, None)
-
-    assert result["statusCode"] == 200
-    mock_s3.get_object.assert_not_called()
-
-
-@patch("handlers.embed.boto3.client")
-def test_embed_worker_skips_already_processed(mock_boto_client):
-    """parsed/ 에 이미 파일이 존재하면 임베딩을 건너뛰고 raw/ 만 삭제한다."""
-    mock_s3 = MagicMock()
-    mock_boto_client.return_value = mock_s3
-    # get_object로 raw 데이터를 먼저 읽고 parsed_key를 확정한 뒤 head_object로 중복 검사
     data = _raw_json_data()
-    _mock_s3_get_object(mock_s3, data)
-    # head_object 성공 = parsed/ 파일 존재
-    mock_s3.head_object.return_value = {}
-
-    event = _make_raw_event("test-bucket", "raw/jobkorea/123.json")
+    event = _make_sqs_event(data)
     result = app.embed_worker(event, None)
 
-    assert result["statusCode"] == 200
-
-    # raw 데이터는 읽지만 임베딩·저장 없이 아카이브 후 삭제
-    mock_s3.get_object.assert_called_once()
-    mock_s3.put_object.assert_not_called()
-    mock_s3.copy_object.assert_called_once_with(
-        Bucket="test-bucket",
-        CopySource={"Bucket": "test-bucket", "Key": "raw/jobkorea/123.json"},
-        Key="archive/raw/jobkorea/123.json",
-    )
-    mock_s3.delete_object.assert_called_once_with(
-        Bucket="test-bucket", Key="raw/jobkorea/123.json",
-    )
+    assert len(result["batchItemFailures"]) == 1
+    assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"

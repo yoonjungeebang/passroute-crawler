@@ -37,9 +37,10 @@ def _reset_module_state():
 @pytest.fixture(autouse=True)
 def _set_required_env(monkeypatch):
     """app._required_env 가 던지지 않도록 모든 테스트에 더미 값을 주입."""
-    monkeypatch.setenv("S3_BUCKET", "test-bucket")
     monkeypatch.setenv("JOB_DETAIL_QUEUE_URL", "https://sqs.test/detail")
     monkeypatch.setenv("SOURCE_COLLECT_QUEUE_URL", "https://sqs.test/source-collect")
+    monkeypatch.setenv("EMBED_QUEUE_URL", "https://sqs.test/embed")
+    monkeypatch.setenv("DB_LOAD_QUEUE_URL", "https://sqs.test/db-load")
     monkeypatch.setenv("DATABASE_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/database")
     monkeypatch.setenv("NAVER_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/naver-api")
     monkeypatch.setenv("DISCORD_WEBHOOK_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/discord")
