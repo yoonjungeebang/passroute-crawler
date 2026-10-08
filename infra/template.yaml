@@ -216,10 +216,7 @@ Resources:
       Environment:
         Variables:
           DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
-          CRAWL_COMPLETE_QUEUE_URL: !GetAtt MessagingStack.Outputs.CrawlCompleteQueueUrl
       Policies:
-        - SQSSendMessagePolicy:
-            QueueName: !GetAtt MessagingStack.Outputs.CrawlCompleteQueueName
         - Statement:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue

@@ -24,8 +24,6 @@ from handlers.collect import (
     job_list_collector,
     source_collect_worker,
     url_index_rebuilder,
-    news_collector,
-    blog_collector,
 )
 from handlers.crawl import job_crawl
 from handlers.embed import embed_worker

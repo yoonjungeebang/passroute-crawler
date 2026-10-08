@@ -36,7 +36,6 @@ def job_crawl(event, context):
     for record in event["Records"]:
         message = json.loads(record["body"])
         trace_id = message.get("trace_id", "")
-        request_id = message.get("request_id", "")
         ref = JobListingRef(
             source=message["source"],
             external_id=message["external_id"],
@@ -62,8 +61,6 @@ def job_crawl(event, context):
             body = _detail_to_dict(detail)
             if trace_id:
                 body["trace_id"] = trace_id
-            if request_id:
-                body["request_id"] = request_id
             sqs.send_message(
                 QueueUrl=embed_queue_url,
                 MessageBody=json.dumps(body, ensure_ascii=False),

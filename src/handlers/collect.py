@@ -56,7 +56,6 @@ def job_list_collector(event, context):
 def source_collect_worker(event, context):
     """소스 1건 목록 수집 → 신규 공고 JobDetailQueue 전송.
 
-    메시지에 company_name 이 포함되면 해당 기업 공고만 필터링한다.
     Tier 2 크롤러는 robots.txt 를 사전 확인하여 차단 시 자동 스킵.
     """
     from crawler.robots_check import RobotsChecker  # noqa: C0415
@@ -71,8 +70,6 @@ def source_collect_worker(event, context):
     for record in event["Records"]:
         message = json.loads(record["body"])
         source = message["source"]
-        company_name = message.get("company_name")
-        request_id = message.get("request_id", "")
 
         try:
             crawler = get_crawler(source)
@@ -81,20 +78,13 @@ def source_collect_worker(event, context):
                 logger.warning("source=%s: robots.txt 차단, 스킵", source)
                 continue
 
-            logger.info("source=%s 목록 수집 시작 (company_name=%s)", source, company_name)
+            logger.info("source=%s 목록 수집 시작", source)
             refs = crawler.collect_listings()
-
-            if company_name:
-                refs = _filter_by_company(refs, company_name)
-                logger.info("source=%s company_name=%s 필터 후 %d건", source, company_name, len(refs))
 
             _check_listing_quality(source, refs)
             candidate_urls = [ref.url for ref in refs]
             existing_urls = pg.get_existing_urls(candidate_urls)
-            new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls, request_id)
-
-            if request_id and company_name:
-                pg.init_source_progress(request_id, company_name, source, new_count)
+            new_count = _dispatch_new_listings(sqs, queue_url, refs, existing_urls)
 
             logger.info("source=%s 수집 완료: %d건 중 신규 %d건", source, len(refs), new_count)
         except Exception:
@@ -102,12 +92,6 @@ def source_collect_worker(event, context):
             failures.append({"itemIdentifier": record["messageId"]})
 
     return {"statusCode": 200, "batchItemFailures": failures}
-
-
-def _filter_by_company(refs: list[JobListingRef], company_name: str) -> list[JobListingRef]:
-    """company_name 을 포함하는 공고만 필터링한다 (대소문자 무시)."""
-    keyword = company_name.lower()
-    return [ref for ref in refs if keyword in ref.company_name.lower()]
 
 
 def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
@@ -145,7 +129,6 @@ def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
 
 def _dispatch_new_listings(
     sqs, queue_url: str, refs: list[JobListingRef], existing_urls: set[str],
-    request_id: str = "",
 ) -> int:
     """신규 공고만 JobDetailQueue 로 배치 전송.
 
@@ -169,8 +152,6 @@ def _dispatch_new_listings(
             "title": ref.title,
             "trace_id": trace_id,
         }
-        if request_id:
-            body["request_id"] = request_id
         batch.append({
             "Id": str(len(batch)),
             "MessageBody": json.dumps(body, ensure_ascii=False),
@@ -273,12 +254,3 @@ def _run_integrity_audit(pg) -> dict:
     return audit
 
 
-# ── 뉴스/블로그 수집 (re-export 유지) ──
-
-
-def news_collector(event, context):
-    pass
-
-
-def blog_collector(event, context):
-    pass

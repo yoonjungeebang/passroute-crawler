@@ -95,15 +95,6 @@ Resources:
         sourceQueueArns:
           - !GetAtt SourceCollectQueue.Arn
 
-  # ── SQS: 수집 완료 콜백 큐 (db_loader → Spring Boot) ──
-  CrawlCompleteQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: passroute-crawl-complete-queue
-      VisibilityTimeout: 30
-      MessageRetentionPeriod: 86400
-      SqsManagedSseEnabled: true
-
 Outputs:
   # ── Queue URLs (Lambda 환경변수용) ──
   JobDetailQueueUrl:
@@ -114,12 +105,6 @@ Outputs:
     Value: !Ref EmbedQueue
   DbLoadQueueUrl:
     Value: !Ref DbLoadQueue
-  CrawlCompleteQueueUrl:
-    Value: !Ref CrawlCompleteQueue
-  CrawlCompleteQueueArn:
-    Value: !GetAtt CrawlCompleteQueue.Arn
-  CrawlCompleteQueueName:
-    Value: !GetAtt CrawlCompleteQueue.QueueName
   # ── Queue ARNs (Lambda SQS 트리거용) ──
   JobDetailQueueArn:
     Value: !GetAtt JobDetailQueue.Arn

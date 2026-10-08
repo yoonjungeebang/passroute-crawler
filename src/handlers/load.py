@@ -2,7 +2,6 @@
 import dataclasses
 import json
 import logging
-import os
 import time
 
 from crawler.base import JobDetail
@@ -107,32 +106,8 @@ def _load_record(data: dict, pg) -> None:
     embedding_status = data.get("embedding_status", "ok")
     pg.save(detail, embedding=embedding, embedding_status=embedding_status)
 
-    request_id = data.get("request_id", "")
-    if request_id:
-        completed = pg.mark_job_loaded(request_id)
-        if completed:
-            _notify_source_complete(request_id)
-
-    logger.info("DB 적재 완료: source=%s id=%s trace_id=%s request_id=%s",
-                data.get("source"), data.get("external_id"), trace_id, request_id)
-
-
-def _notify_source_complete(request_id: str) -> None:
-    """소스 내 전체 공고 적재 완료 시 Spring Boot 로 콜백을 발행한다."""
-    queue_url = os.environ.get("CRAWL_COMPLETE_QUEUE_URL")
-    if not queue_url:
-        logger.warning("CRAWL_COMPLETE_QUEUE_URL 미설정, 콜백 스킵")
-        return
-    try:
-        import boto3
-        sqs = boto3.client("sqs")
-        sqs.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps({"request_id": request_id}, ensure_ascii=False),
-        )
-        logger.info("수집 완료 콜백 발행: request_id=%s", request_id)
-    except Exception:
-        logger.exception("수집 완료 콜백 발행 실패: request_id=%s", request_id)
+    logger.info("DB 적재 완료: source=%s id=%s trace_id=%s",
+                data.get("source"), data.get("external_id"), trace_id)
 
 
 def _handle_delete_expired(data: dict, pg) -> None:
