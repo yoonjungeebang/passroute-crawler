@@ -24,12 +24,14 @@ CloudWatch 가 자동으로 메트릭을 추출한다. 별도 API 호출이 없�
 """
 import json
 import logging
-import sys
 import time
+
+from config import load_metrics_config
 
 logger = logging.getLogger(__name__)
 
-_NAMESPACE = "Passroute"
+_METRICS_CONFIG = load_metrics_config()
+_NAMESPACE: str = _METRICS_CONFIG["namespace"]
 
 
 class MetricsLogger:

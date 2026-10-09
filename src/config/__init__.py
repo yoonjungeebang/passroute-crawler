@@ -63,3 +63,12 @@ def load_embedding_config() -> dict:
         "max_chunk_tokens": int(raw["max_chunk_tokens"]),
         "inference_batch_size": int(raw["inference_batch_size"]),
     }
+
+
+def load_metrics_config() -> dict:
+    """CloudWatch 메트릭 설정을 로드한다."""
+    raw = load_yaml("metrics.yaml")
+
+    return {
+        "namespace": raw["namespace"],
+    }
