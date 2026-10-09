@@ -138,3 +138,13 @@ def strip_html(text: str) -> str:
     #   전각 문자 → 반각 문자로 변환 등
     cleaned = unicodedata.normalize("NFKC", cleaned)
     return cleaned.strip()
+
+
+def build_document(raw_text: str, tech_stack: tuple[str, ...]) -> str:
+    """raw_text + tech_stack 을 임베딩 대상 document 문자열로 조합."""
+    parts: list[str] = []
+    if raw_text:
+        parts.append(raw_text)
+    if tech_stack:
+        parts.append(f"[기술스택]\n{', '.join(tech_stack)}")
+    return "\n\n".join(parts)

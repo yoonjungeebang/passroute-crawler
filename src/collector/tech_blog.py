@@ -90,7 +90,7 @@ def fetch_content_from_rss(feed_url: str, article_url: str) -> str:
             agent="Mozilla/5.0 (compatible; passroute-bot/1.0)",
         )
     except Exception:
-        logger.exception("RSS 피드 파싱 실패: %s", feed_url)
+        logger.exception("RSS 피드 파싱 에러: %s", feed_url)
         return ""
 
     for entry in parsed.entries:
@@ -101,6 +101,7 @@ def fetch_content_from_rss(feed_url: str, article_url: str) -> str:
             if content and len(content) >= _MIN_CONTENT_LENGTH:
                 return content
 
+    logger.info("RSS 피드에 해당 글 없음: feed=%s, url=%s", feed_url, article_url)
     return ""
 
 

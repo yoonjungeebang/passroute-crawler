@@ -43,3 +43,23 @@ def load_tech_blog_config() -> dict:
         "min_content_length": int(raw["min_content_length"]),
         "feeds": raw["feeds"],
     }
+
+
+def load_embedding_config() -> dict:
+    """임베딩 모델 설정을 로드한다.
+
+    model_dir 은 환경변수 EMBEDDING_MODEL_DIR 로 오버라이드 가능.
+    """
+    import os
+
+    raw = load_yaml("embedding.yaml")
+    model_dir = os.environ.get("EMBEDDING_MODEL_DIR") or raw["model_dir"]
+
+    return {
+        "model_name": raw["model_name"],
+        "model_dir": model_dir,
+        "onnx_path": os.path.join(model_dir, raw["onnx_filename"]),
+        "tokenizer_path": os.path.join(model_dir, raw["tokenizer_dirname"]),
+        "max_chunk_tokens": int(raw["max_chunk_tokens"]),
+        "inference_batch_size": int(raw["inference_batch_size"]),
+    }

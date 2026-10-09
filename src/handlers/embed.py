@@ -16,7 +16,8 @@ def embed_worker(event, context):
     실패한 레코드만 batchItemFailures로 반환하여 성공한 메시지의
     불필요한 재처리를 방지한다.
     """
-    from core.embedding import build_document, embed_text  # noqa: C0415
+    from core.embedding import embed_text  # noqa: C0415
+    from parser.common import build_document  # noqa: C0415
     from core.metrics import MetricsLogger  # noqa: C0415
 
     t_total = time.monotonic()

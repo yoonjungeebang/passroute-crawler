@@ -9,7 +9,7 @@ import psycopg2
 import psycopg2.extras
 
 # import A as B: A를 B라는 이름으로 가져오기 (이름 충돌 방지용)
-from core.embedding import build_document as _build_document
+from parser.common import build_document as _build_document
 from crawler.base import JobDetail
 
 logger = logging.getLogger(__name__)
