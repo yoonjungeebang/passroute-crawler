@@ -30,6 +30,8 @@ def load_naver_news_config() -> dict:
         "api_url": raw["api_url"],
         "retention_days": int(raw["retention_days"]),
         "api_delay": float(raw["api_delay"]),
+        "max_display": int(raw["max_display"]),
+        "api_timeout": int(raw["api_timeout"]),
         "search_suffixes": tuple(raw["search_suffixes"]),
         "exclude_news_title_keywords": tuple(raw["exclude_news_title_keywords"]),
     }
@@ -41,6 +43,7 @@ def load_tech_blog_config() -> dict:
 
     return {
         "min_content_length": int(raw["min_content_length"]),
+        "page_timeout": int(raw["page_timeout"]),
         "feeds": raw["feeds"],
     }
 
@@ -71,4 +74,56 @@ def load_metrics_config() -> dict:
 
     return {
         "namespace": raw["namespace"],
+    }
+
+
+def load_crawler_config() -> dict:
+    """크롤러 공통 설정을 로드한다."""
+    raw = load_yaml("crawler.yaml")
+
+    return {
+        "delay_min": float(raw["delay_min"]),
+        "delay_max": float(raw["delay_max"]),
+        "max_pages": int(raw["max_pages"]),
+        "stale_page_threshold": int(raw["stale_page_threshold"]),
+        "robots_cache_ttl": int(raw["robots_cache_ttl"]),
+    }
+
+
+def load_circuit_breaker_config() -> dict:
+    """서킷 브레이커 설정을 로드한다."""
+    raw = load_yaml("circuit_breaker.yaml")
+
+    return {
+        "failure_threshold": int(raw["failure_threshold"]),
+        "recovery_timeout": float(raw["recovery_timeout"]),
+    }
+
+
+def load_search_config() -> dict:
+    """네이버 실시간 검색 설정을 로드한다."""
+    raw = load_yaml("search.yaml")
+
+    return {
+        "news_url": raw["news_url"],
+        "webkr_url": raw["webkr_url"],
+        "timeout": int(raw["timeout"]),
+        "retry_total": int(raw["retry_total"]),
+        "retry_backoff_factor": float(raw["retry_backoff_factor"]),
+        "min_description_length": int(raw["min_description_length"]),
+    }
+
+
+def load_api_config() -> dict:
+    """API 핸들러 설정을 로드한다."""
+    raw = load_yaml("api.yaml")
+
+    return {
+        "max_query_length": int(raw["max_query_length"]),
+        "max_company_length": int(raw["max_company_length"]),
+        "max_keywords": int(raw["max_keywords"]),
+        "blog_crawl_delay": float(raw["blog_crawl_delay"]),
+        "search_news_display": int(raw["search_news_display"]),
+        "webkr_keyword_display": int(raw["webkr_keyword_display"]),
+        "webkr_default_display": int(raw["webkr_default_display"]),
     }

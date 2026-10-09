@@ -1,0 +1,9 @@
+# API 핸들러 설정
+
+max_query_length: 200       # 검색어 최대 길이
+max_company_length: 50      # 회사명 최대 길이
+max_keywords: 10            # 키워드 최대 개수
+blog_crawl_delay: 0.5       # 블로그 크롤링 간 대기 (초)
+search_news_display: 5      # 검색 API 뉴스 결과 수
+webkr_keyword_display: 5    # 키워드별 웹문서 결과 수
+webkr_default_display: 10   # 기본 웹문서 결과 수

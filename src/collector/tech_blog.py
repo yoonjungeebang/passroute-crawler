@@ -29,6 +29,7 @@ class BlogFeed:
 
 _BLOG_CONFIG = load_tech_blog_config()
 _MIN_CONTENT_LENGTH: int = _BLOG_CONFIG["min_content_length"]
+_PAGE_TIMEOUT: int = _BLOG_CONFIG["page_timeout"]
 _DEFAULT_FEEDS: tuple[BlogFeed, ...] = tuple(
     BlogFeed(f["company_name"], f["feed_url"])
     for f in _BLOG_CONFIG["feeds"]
@@ -151,7 +152,7 @@ def _fetch_page_content(session: requests.Session, url: str) -> str:
     import trafilatura  # noqa: C0415
 
     try:
-        resp = session.get(url, timeout=15)
+        resp = session.get(url, timeout=_PAGE_TIMEOUT)
         resp.raise_for_status()
     except Exception:
         logger.exception("페이지 요청 실패: %s", url)

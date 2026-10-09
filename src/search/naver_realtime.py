@@ -7,19 +7,25 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from config import load_search_config
 from core.circuit_breaker import get_breaker
 from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
 
-_NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
-_WEBKR_URL = "https://naverapihub.apigw.ntruss.com/search/v1/webkr"
+_SEARCH_CONFIG = load_search_config()
+_NEWS_URL: str = _SEARCH_CONFIG["news_url"]
+_WEBKR_URL: str = _SEARCH_CONFIG["webkr_url"]
 
 
 def _make_session(api_key_id: str, api_key: str) -> requests.Session:
     """네이버 API HUB 세션 생성."""
     session = requests.Session()
-    retry = Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503])
+    retry = Retry(
+        total=_SEARCH_CONFIG["retry_total"],
+        backoff_factor=_SEARCH_CONFIG["retry_backoff_factor"],
+        status_forcelist=[429, 500, 502, 503],
+    )
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.headers.update({
         "X-NCP-APIGW-API-KEY-ID": api_key_id,
@@ -45,7 +51,7 @@ def _search(
         params.update(extra_params)
     try:
         with breaker:
-            resp = session.get(url, params=params, timeout=5)
+            resp = session.get(url, params=params, timeout=_SEARCH_CONFIG["timeout"])
             resp.raise_for_status()
             data = resp.json()
     except Exception:
@@ -134,7 +140,7 @@ def filter_webkr_results(
         if not _is_article_url(url):
             continue
 
-        if item.get("description") and len(item["description"]) < 30:
+        if item.get("description") and len(item["description"]) < _SEARCH_CONFIG["min_description_length"]:
             continue
 
         # 키워드가 제목이나 description에 포함되면 우선순위 높임

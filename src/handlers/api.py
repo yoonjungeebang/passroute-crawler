@@ -18,6 +18,7 @@ from parser.common import make_external_id
 from ._common import (
     MAX_COMPANY_LENGTH,
     MAX_QUERY_LENGTH,
+    _API_CONFIG,
     api_error,
     get_pg_storage,
     safe_int,
@@ -83,7 +84,7 @@ def search_api(event, context):
     # 예: (id, secret) = ("abc", "xyz") → id="abc", secret="xyz"
     client_id, client_secret = get_naver_credentials()
     naver_session = _make_session(client_id, client_secret)
-    news_results = search_news(naver_session, f"{search_query} 기술", display=5)
+    news_results = search_news(naver_session, f"{search_query} 기술", display=_API_CONFIG["search_news_display"])
     metrics.put_duration("NewsApiDuration", t0)
     metrics.put_count("NewsResultCount", len(news_results))
 
@@ -181,7 +182,7 @@ def company_collect(event, context):
 
     # ── 2. 기술 블로그 수집 ──
     t0 = time.monotonic()
-    _MAX_KEYWORDS = 10
+    _MAX_KEYWORDS = _API_CONFIG["max_keywords"]
     keywords_param = params.get("keywords", "").strip()
     # 리스트 컴프리헨션(list comprehension): [표현식 for 변수 in 반복 if 조건]
     # 한 줄로 리스트를 만드는 파이썬의 강력한 문법.
@@ -198,11 +199,11 @@ def company_collect(event, context):
     if keyword_list:
         for keyword in keyword_list:
             query = f"{company} 기술블로그 {keyword}"
-            results = search_webkr(naver_session, query, display=5)
+            results = search_webkr(naver_session, query, display=_API_CONFIG["webkr_keyword_display"])
             raw_results.extend(results)
     else:
         query = f"{company} 기술블로그"
-        raw_results = search_webkr(naver_session, query, display=10)
+        raw_results = search_webkr(naver_session, query, display=_API_CONFIG["webkr_default_display"])
 
     filtered = filter_webkr_results(raw_results, keyword_list, max_results=max_crawl)
 
@@ -234,7 +235,7 @@ def company_collect(event, context):
                 logger.info("RSS에 없고 크롤링 차단, 스킵: %s", url)
                 continue
             content = _fetch_page_content(blog_session, url)
-            time.sleep(0.5)
+            time.sleep(_API_CONFIG["blog_crawl_delay"])
 
         if not content:
             logger.info("본문 추출 실패, 스킵: %s", url)

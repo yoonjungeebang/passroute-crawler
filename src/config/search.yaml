@@ -1,0 +1,8 @@
+# 네이버 API HUB 실시간 검색 설정
+
+news_url: "https://naverapihub.apigw.ntruss.com/search/v1/news"
+webkr_url: "https://naverapihub.apigw.ntruss.com/search/v1/webkr"
+timeout: 5                    # API 요청 타임아웃 (초)
+retry_total: 2                # 최대 재시도 횟수
+retry_backoff_factor: 0.5     # 재시도 간격 배수
+min_description_length: 30    # 웹문서 필터링 최소 설명 길이

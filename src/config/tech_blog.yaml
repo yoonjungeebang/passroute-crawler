@@ -2,6 +2,7 @@
 # 도메인 → RSS 피드 URL 매핑에 사용된다.
 
 min_content_length: 100
+page_timeout: 15          # 페이지 크롤링 타임아웃 (초)
 
 # ── RSS/Atom 피드 매핑 ──
 

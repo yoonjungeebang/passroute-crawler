@@ -10,7 +10,11 @@ import enum
 import logging
 import time
 
+from config import load_circuit_breaker_config
+
 logger = logging.getLogger(__name__)
+
+_CB_CONFIG = load_circuit_breaker_config()
 
 
 class CircuitState(enum.Enum):
@@ -46,8 +50,8 @@ class CircuitBreaker:
         self,
         name: str,
         *,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 60.0,
+        failure_threshold: int = _CB_CONFIG["failure_threshold"],
+        recovery_timeout: float = _CB_CONFIG["recovery_timeout"],
     ):
         self.name = name
         self.failure_threshold = failure_threshold
@@ -121,8 +125,8 @@ _registry: dict[str, CircuitBreaker] = {}
 def get_breaker(
     name: str,
     *,
-    failure_threshold: int = 5,
-    recovery_timeout: float = 60.0,
+    failure_threshold: int = _CB_CONFIG["failure_threshold"],
+    recovery_timeout: float = _CB_CONFIG["recovery_timeout"],
 ) -> CircuitBreaker:
     """이름으로 서킷 브레이커를 가져오거나 생성한다.
 

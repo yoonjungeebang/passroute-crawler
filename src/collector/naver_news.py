@@ -25,14 +25,14 @@ from parser.common import make_external_id, strip_html
 
 logger = logging.getLogger(__name__)
 
-MAX_DISPLAY = 100
-
 # ── 설정 파일에서 로드 ──
 
 _NEWS_CONFIG = load_naver_news_config()
 NAVER_NEWS_API_URL: str = _NEWS_CONFIG["api_url"]
 NEWS_RETENTION_DAYS: int = _NEWS_CONFIG["retention_days"]
 _DEFAULT_API_DELAY: float = _NEWS_CONFIG["api_delay"]
+MAX_DISPLAY: int = _NEWS_CONFIG["max_display"]
+_API_TIMEOUT: int = _NEWS_CONFIG["api_timeout"]
 _SEARCH_SUFFIXES: tuple[str, ...] = _NEWS_CONFIG["search_suffixes"]
 _EXCLUDE_TITLE_KEYWORDS: tuple[str, ...] = _NEWS_CONFIG["exclude_news_title_keywords"]
 
@@ -122,9 +122,8 @@ class NaverNewsCollector:
         with self._breaker:  # 서킷 브레이커 보호 하에 실행
             # session.get(): HTTP GET 요청을 보낸다.
             # params=params: URL 뒤에 ?query=...&display=... 형태로 자동 추가됨
-            # timeout=10: 10초 안에 응답이 없으면 에러
             resp = self.session.get(
-                NAVER_NEWS_API_URL, params=params, timeout=10,
+                NAVER_NEWS_API_URL, params=params, timeout=_API_TIMEOUT,
             )
             # raise_for_status(): HTTP 응답 코드가 4xx/5xx 이면 예외를 발생시킨다.
             resp.raise_for_status()

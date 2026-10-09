@@ -5,6 +5,8 @@
 api_url: "https://naverapihub.apigw.ntruss.com/search/v1/news"
 retention_days: 90
 api_delay: 0.1
+max_display: 100    # API 1회 최대 결과 수
+api_timeout: 10     # API 요청 타임아웃 (초)
 
 search_suffixes:
   - 기술

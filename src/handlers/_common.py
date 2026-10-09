@@ -2,8 +2,11 @@
 import logging
 import os
 
+from config import load_api_config
+
 logger = logging.getLogger(__name__)
 
+_API_CONFIG = load_api_config()
 
 # SQS SendMessageBatch API의 최대 메시지 수 (AWS 제한: 10개)
 SQS_BATCH_SIZE = 10
@@ -46,8 +49,8 @@ def get_pg_storage():
 
 
 # 쿼리/회사명 입력의 최대 길이 제한 (악의적 입력 방지)
-MAX_QUERY_LENGTH = 200
-MAX_COMPANY_LENGTH = 50
+MAX_QUERY_LENGTH: int = _API_CONFIG["max_query_length"]
+MAX_COMPANY_LENGTH: int = _API_CONFIG["max_company_length"]
 
 
 def api_error(status: int, message: str) -> dict:

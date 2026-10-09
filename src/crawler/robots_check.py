@@ -4,13 +4,15 @@ import time
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
+from config import load_crawler_config
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_USER_AGENT = (
     "passroute-bot/1.0 "
     "(+https://github.com/yoonjungeebang/passroute-crawler; yezanee@gmail.com)"
 )
-_CACHE_TTL = 86400  # 24시간
+_CACHE_TTL: int = load_crawler_config()["robots_cache_ttl"]
 
 
 class RobotsChecker:
