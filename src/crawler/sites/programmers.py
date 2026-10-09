@@ -1,19 +1,10 @@
-"""프로그래머스(Programmers) 크롤러. PROGRAMMERS_* 환경변수로 오버라이드 가능."""
+"""프로그래머스(Programmers) 크롤러."""
 import logging
-import os
 from datetime import datetime
 from typing import ClassVar
 
 from core import KST
-from crawler.base import (
-    DEFAULT_DELAY_MAX,
-    DEFAULT_DELAY_MIN,
-    DEFAULT_MAX_PAGES,
-    JobCrawler,
-    JobDetail,
-    JobListingRef,
-    make_crawler_session,
-)
+from crawler.base import JobCrawler, JobDetail, JobListingRef
 from crawler.validation import CrawlValidationError, require_keys, require_non_empty
 from parser.common import normalize_tech_name
 
@@ -25,14 +16,6 @@ _API_BASE = "https://career.programmers.co.kr/api"
 class ProgrammersCrawler(JobCrawler):
     source: ClassVar[str] = "programmers"
     base_url: ClassVar[str] = "https://career.programmers.co.kr"
-
-    def __init__(self, **kwargs):
-        max_pages = int(os.environ.get("PROGRAMMERS_MAX_PAGES", DEFAULT_MAX_PAGES))
-        delay_min = float(os.environ.get("PROGRAMMERS_DELAY_MIN", DEFAULT_DELAY_MIN))
-        delay_max = float(os.environ.get("PROGRAMMERS_DELAY_MAX", DEFAULT_DELAY_MAX))
-        super().__init__(max_pages=max_pages, delay_min=delay_min, delay_max=delay_max, **kwargs)
-
-        self.session = make_crawler_session()
 
     def fetch_listings_page(self, page: int) -> list[JobListingRef]:
         """프로그래머스 채용공고 목록 API 호출."""
@@ -94,6 +77,10 @@ class ProgrammersCrawler(JobCrawler):
             parts.append(f"[우대사항]\n{preferred}")
 
         tech_stacks = job.get("technicalTags") or []
+        # isinstance(t, dict): t가 딕셔너리 타입인지 확인.
+        # API 응답이 {"name": "Python"} 일 수도, "Python" 일 수도 있어서 둘 다 처리.
+        # 삼항 표현식: t.get("name", t) if isinstance(t, dict) else t
+        #   → dict이면 name 키를 꺼내고, 아니면 그 값 자체를 사용.
         normalized = tuple(normalize_tech_name(t.get("name", t) if isinstance(t, dict) else t) for t in tech_stacks if t)
 
         deadline_str = job.get("endAt", "")
@@ -114,22 +101,3 @@ class ProgrammersCrawler(JobCrawler):
             career_level=ref.career_level,
         )
 
-    @staticmethod
-    def _parse_career(job: dict) -> str:
-        min_career = job.get("minCareer", -1)
-        max_career = job.get("maxCareer", -1)
-        if min_career <= 0 and max_career <= 0:
-            return "신입"
-        if min_career <= 0:
-            return f"신입~{max_career}년"
-        return f"{min_career}~{max_career}년"
-
-    @staticmethod
-    def _parse_deadline(deadline_str: str) -> int:
-        if not deadline_str:
-            return 0
-        try:
-            dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except (ValueError, TypeError):
-            return 0

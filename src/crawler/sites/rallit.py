@@ -1,19 +1,10 @@
-"""랠릿(Rallit) 크롤러. RALLIT_* 환경변수로 오버라이드 가능."""
+"""랠릿(Rallit) 크롤러."""
 import logging
-import os
 from datetime import datetime
 from typing import ClassVar
 
 from core import KST
-from crawler.base import (
-    DEFAULT_DELAY_MAX,
-    DEFAULT_DELAY_MIN,
-    DEFAULT_MAX_PAGES,
-    JobCrawler,
-    JobDetail,
-    JobListingRef,
-    make_crawler_session,
-)
+from crawler.base import JobCrawler, JobDetail, JobListingRef
 from crawler.validation import CrawlValidationError, require_keys, require_non_empty
 from parser.common import normalize_tech_name
 
@@ -25,14 +16,6 @@ _API_BASE = "https://api.rallit.com"
 class RallitCrawler(JobCrawler):
     source: ClassVar[str] = "rallit"
     base_url: ClassVar[str] = "https://www.rallit.com"
-
-    def __init__(self, **kwargs):
-        max_pages = int(os.environ.get("RALLIT_MAX_PAGES", DEFAULT_MAX_PAGES))
-        delay_min = float(os.environ.get("RALLIT_DELAY_MIN", DEFAULT_DELAY_MIN))
-        delay_max = float(os.environ.get("RALLIT_DELAY_MAX", DEFAULT_DELAY_MAX))
-        super().__init__(max_pages=max_pages, delay_min=delay_min, delay_max=delay_max, **kwargs)
-
-        self.session = make_crawler_session()
 
     def fetch_listings_page(self, page: int) -> list[JobListingRef]:
         """랠릿 채용공고 목록 API 호출."""
@@ -117,22 +100,3 @@ class RallitCrawler(JobCrawler):
             career_level=ref.career_level,
         )
 
-    @staticmethod
-    def _parse_career(job: dict) -> str:
-        min_career = job.get("minCareer", -1)
-        max_career = job.get("maxCareer", -1)
-        if min_career <= 0 and max_career <= 0:
-            return "신입"
-        if min_career <= 0:
-            return f"신입~{max_career}년"
-        return f"{min_career}~{max_career}년"
-
-    @staticmethod
-    def _parse_deadline(deadline_str: str) -> int:
-        if not deadline_str:
-            return 0
-        try:
-            dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except (ValueError, TypeError):
-            return 0
