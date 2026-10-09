@@ -1,29 +1,19 @@
-"""주요 IT 기업 기술 블로그 수집 모듈.
+"""기술 블로그 본문 추출 모듈.
 
-RSS/Atom 피드에서 기술 블로그 글을 수집한다.
-콘텐츠 확보 전략 (3단계):
-  1. RSS content:encoded 에 본문 전체가 있으면 그대로 사용
-  2. 없으면 robots.txt 확인 후 허용된 페이지만 본문 크롤링
-  3. 크롤링 차단 시 제목만 저장
+도메인 → RSS 피드 URL 매핑과, RSS/페이지 크롤링을 통한 본문 추출 기능을 제공한다.
+면접 방 생성 시 실시간 수집 파이프라인(api.company_collect)에서 사용된다.
 """
 import logging
-import re            # 정규표현식: 패턴 기반 문자열 검색/치환
-import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone  # timezone: UTC 등 타임존 정보
-from email.utils import parsedate_to_datetime
 
-# ── 외부 패키지 ──
-import feedparser    # RSS/Atom 피드를 파싱하는 라이브러리
+import feedparser
 import requests
-from bs4 import BeautifulSoup  # BeautifulSoup: HTML을 파싱해서 원하는 요소를 쉽게 추출하는 라이브러리
+from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from config import load_tech_blog_config
-from core import KST
-from crawler.robots_check import RobotsChecker  # robots.txt 규칙 확인기 (크롤링 허용 여부 판단)
-from parser.common import make_external_id, strip_html
+from parser.common import strip_html
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +28,7 @@ class BlogFeed:
 # ── 설정 파일에서 로드 ──
 
 _BLOG_CONFIG = load_tech_blog_config()
-BLOG_RETENTION_DAYS: int = _BLOG_CONFIG["retention_days"]
-_MAX_FETCH_PER_FEED: int = _BLOG_CONFIG["max_fetch_per_feed"]
-_FEED_FILTER_DAYS = timedelta(days=_BLOG_CONFIG["feed_filter_days"])
 _MIN_CONTENT_LENGTH: int = _BLOG_CONFIG["min_content_length"]
-_DEFAULT_REQUEST_DELAY: float = _BLOG_CONFIG["request_delay"]
 _DEFAULT_FEEDS: tuple[BlogFeed, ...] = tuple(
     BlogFeed(f["company_name"], f["feed_url"])
     for f in _BLOG_CONFIG["feeds"]
@@ -128,37 +114,6 @@ _HTTP_HEADERS = {
 }
 
 
-@dataclass(frozen=True)
-class BlogArticle:
-    """블로그 글 1건."""
-    company_name: str
-    title: str
-    content: str
-    url: str
-    pub_date: datetime
-    collected_at: str
-
-
-def _parse_pub_date(entry: dict) -> datetime:
-    """feedparser 엔트리에서 발행일을 추출한다."""
-    published = entry.get("published") or entry.get("updated") or ""
-    if not published:
-        return datetime.now(KST)
-    try:
-        return parsedate_to_datetime(published)
-    except (ValueError, TypeError):
-        pass
-    try:
-        if hasattr(entry, "published_parsed") and entry.published_parsed:
-            from calendar import timegm
-            return datetime.fromtimestamp(timegm(entry.published_parsed), tz=timezone.utc)
-    except (ValueError, TypeError, OverflowError):
-        pass
-    return datetime.now(KST)
-
-
-
-
 def _extract_rss_content(entry: dict) -> str:
     """RSS 엔트리에서 최대한 풍부한 콘텐츠를 추출한다.
 
@@ -225,202 +180,3 @@ def _fetch_page_content(session: requests.Session, url: str) -> str:
             return el.get_text(separator="\n", strip=True)
 
     return ""
-
-
-# ── 직무 카테고리 키워드 (설정 파일에서 로드) ──
-
-_JOB_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = _BLOG_CONFIG["job_category_keywords"]
-
-
-# ── 키워드 매칭 최적화: 짧은 키워드는 정규식, 긴 키워드는 단순 포함 검사 ──
-
-# 타입 힌트 해설:
-# dict[str, list[tuple[re.Pattern, str]]]:
-#   "키가 문자열이고 값이 [(정규식패턴, 문자열), ...] 리스트인 딕셔너리"
-_SHORT_KW_PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {}
-_LONG_KW_LIST: dict[str, list[str]] = {}
-
-# .items(): 딕셔너리의 (키, 값) 쌍을 하나씩 반환하는 메서드.
-# for key, value in dict.items(): 와 같이 두 변수로 언패킹해서 사용.
-for _cat, _keywords in _JOB_CATEGORY_KEYWORDS.items():
-    short = []
-    long = []
-    for kw in _keywords:
-        kw_lower = kw.lower()
-        if len(kw_lower) <= 3:
-            # 짧은 키워드(3자 이하)는 \b (단어 경계)를 써서 정확한 매칭
-            # 예: "AI"가 "RAIN"에 매칭되지 않도록
-            # re.escape(): 정규식 특수 문자를 이스케이프. "C++" → "C\\+\\+"
-            # rf"...": r(raw) + f(f-string) 동시 사용
-            short.append((re.compile(rf"\b{re.escape(kw_lower)}\b"), kw_lower))
-        else:
-            # 긴 키워드(4자 이상)는 단순 포함 검사로 충분 (오탐 위험 낮음)
-            long.append(kw_lower)
-    _SHORT_KW_PATTERNS[_cat] = short
-    _LONG_KW_LIST[_cat] = long
-
-
-def _classify_job_categories(text: str) -> list[str]:
-    """텍스트에서 키워드를 찾아 관련 직무 카테고리를 반환한다."""
-    text_lower = text.lower()
-    categories: list[str] = []
-    # for category in dict: 딕셔너리를 for로 돌리면 키만 순회한다.
-    for category in _JOB_CATEGORY_KEYWORDS:
-        found = False
-        # 튜플 언패킹: (pattern, _) 에서 _ 는 "이 값은 안 쓴다"는 관례적 변수 이름.
-        for pattern, _ in _SHORT_KW_PATTERNS[category]:
-            # pattern.search(): 문자열 어디에서든 패턴이 매칭되면 Match 객체 반환 (없으면 None)
-            if pattern.search(text_lower):
-                found = True
-                break  # 하나라도 찾으면 더 찾을 필요 없음
-        if not found:
-            for kw_lower in _LONG_KW_LIST[category]:
-                if kw_lower in text_lower:  # 문자열 포함 검사
-                    found = True
-                    break
-        if found:
-            categories.append(category)
-    return categories
-
-
-def _deadline_from_pub_date(pub_date: datetime) -> int:
-    """pub_date + 365일을 Unix timestamp 로 변환."""
-    expiry = pub_date + timedelta(days=BLOG_RETENTION_DAYS)
-    return int(expiry.timestamp())
-
-
-class TechBlogCollector:
-    """RSS/Atom 피드에서 기술 블로그 글을 수집한다.
-
-    콘텐츠 확보 3단계 전략:
-      1. RSS content:encoded 에 본문이 있으면 그대로 사용
-      2. 없으면 robots.txt 허용 시 페이지 크롤링
-      3. 차단 시 제목만 저장
-    """
-
-    def __init__(
-        self,
-        *,
-        feeds: tuple[BlogFeed, ...] | None = None,
-        request_delay: float = _DEFAULT_REQUEST_DELAY,
-    ):
-        self.feeds = feeds or _DEFAULT_FEEDS
-        self.request_delay = request_delay
-        self.session = _make_session()
-        self.robots = RobotsChecker()
-
-    def _fetch_feed(self, feed: BlogFeed) -> list[BlogArticle]:
-        """한 피드의 글을 수집한다."""
-        now_iso = datetime.now(KST).isoformat()
-        now = datetime.now(KST)
-
-        try:
-            parsed = feedparser.parse(
-                feed.feed_url,
-                agent="Mozilla/5.0 (compatible; passroute-bot/1.0)",
-            )
-        except Exception:
-            logger.exception("피드 파싱 실패: %s (%s)", feed.company_name, feed.feed_url)
-            return []
-
-        if parsed.bozo and not parsed.entries:
-            logger.warning(
-                "피드 오류 (항목 없음): %s (%s) — %s",
-                feed.company_name, feed.feed_url, parsed.bozo_exception,
-            )
-            return []
-
-        entries = parsed.entries
-
-        # 20건 초과 피드는 최근 1년 이내 글만
-        if len(entries) > 20:
-            cutoff = now - _FEED_FILTER_DAYS
-            entries = [
-                e for e in entries
-                if _parse_pub_date(e) >= cutoff
-            ]
-
-        articles: list[BlogArticle] = []
-        fetch_count = 0
-
-        for entry in entries:
-            url = entry.get("link", "")
-            if not url:
-                continue
-
-            title = strip_html(entry.get("title", ""))
-            if not title:
-                continue
-
-            # 1단계: RSS 에서 콘텐츠 추출
-            content = _extract_rss_content(entry)
-
-            # 2단계: 콘텐츠 부족 시 robots.txt 허용된 페이지만 크롤링
-            if len(content) < _MIN_CONTENT_LENGTH and fetch_count < _MAX_FETCH_PER_FEED:
-                if self.robots.is_allowed(url):
-                    fetched = _fetch_page_content(self.session, url)
-                    if fetched:
-                        content = fetched
-                    time.sleep(self.request_delay)
-                fetch_count += 1
-
-            # 3단계: 콘텐츠가 여전히 없으면 제목만 저장
-            articles.append(BlogArticle(
-                company_name=feed.company_name,
-                title=title,
-                content=content,
-                url=url,
-                pub_date=_parse_pub_date(entry),
-                collected_at=now_iso,
-            ))
-
-        return articles
-
-    def collect_all(self) -> list[BlogArticle]:
-        """전체 RSS 피드에서 블로그 글을 수집한다. URL 기준 전역 중복 제거."""
-        all_articles: list[BlogArticle] = []
-        global_seen_urls: set[str] = set()
-
-        for feed in self.feeds:
-            articles = self._fetch_feed(feed)
-            for article in articles:
-                if article.url in global_seen_urls:
-                    continue
-                global_seen_urls.add(article.url)
-                all_articles.append(article)
-
-            logger.info("feed=%s: %d건 수집", feed.company_name, len(articles))
-
-            time.sleep(self.request_delay)
-
-        logger.info(
-            "전체 블로그 수집 완료: %d건 (RSS %d개)",
-            len(all_articles), len(self.feeds),
-        )
-        return all_articles
-
-
-def blog_article_to_detail_dict(article: BlogArticle) -> dict:
-    """BlogArticle 을 S3 저장용 dict 로 변환. JobDetail 호환 형식."""
-    # 삼항 연산자: content가 있으면 제목+본문, 없으면 제목만
-    raw_text = f"{article.title}\n\n{article.content}" if article.content else article.title
-    categories = _classify_job_categories(raw_text)
-
-    if categories:
-        # ', '.join(리스트): 리스트의 각 요소를 ', '로 연결한 문자열을 만든다.
-        # ["백엔드개발자", "클라우드엔지니어"] → "백엔드개발자, 클라우드엔지니어"
-        # += : 문자열에 이어 붙이기 (raw_text = raw_text + ...)
-        raw_text += f"\n\n[직무]\n{', '.join(categories)}"
-
-    return {
-        "source": "tech_blog",
-        "external_id": make_external_id(article.url),
-        "url": article.url,
-        "company_name": article.company_name,
-        "title": article.title,
-        "raw_text": raw_text,
-        "tech_stack": [],
-        "deadline": _deadline_from_pub_date(article.pub_date),
-        "crawled_at": article.collected_at,
-        "career_level": "",
-    }
