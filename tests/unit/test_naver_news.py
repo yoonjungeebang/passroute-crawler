@@ -15,10 +15,10 @@ from collector.naver_news import (
     _deadline_from_pub_date,
     _is_noise,
     _is_relevant,
-    _make_external_id,
     _parse_pub_date,
     news_item_to_detail_dict,
 )
+from parser.common import make_external_id
 from parser.common import strip_html
 
 KST = timezone(timedelta(hours=9))
@@ -56,19 +56,19 @@ class TestParsePubDate:
         assert dt.tzinfo is not None
 
 
-# ── _make_external_id ──
+# ── make_external_id ──
 
 
 class TestMakeExternalId:
     def test_deterministic(self):
         url = "https://example.com/article/123"
-        assert _make_external_id(url) == _make_external_id(url)
+        assert make_external_id(url) == make_external_id(url)
 
     def test_different_urls_differ(self):
-        assert _make_external_id("https://a.com") != _make_external_id("https://b.com")
+        assert make_external_id("https://a.com") != make_external_id("https://b.com")
 
     def test_length(self):
-        assert len(_make_external_id("https://example.com")) == 16
+        assert len(make_external_id("https://example.com")) == 16
 
 
 # ── _is_noise ──
@@ -140,7 +140,7 @@ class TestNewsItemToDetailDict:
         assert d["tech_stack"] == []
         assert d["career_level"] == ""
         assert isinstance(d["deadline"], int)
-        assert d["external_id"] == _make_external_id(item.url)
+        assert d["external_id"] == make_external_id(item.url)
 
 
 # ── NaverNewsCollector ──

@@ -10,9 +10,9 @@ from collector.tech_blog import (
     _classify_job_categories,
     _deadline_from_pub_date,
     _extract_rss_content,
-    _make_external_id,
     blog_article_to_detail_dict,
 )
+from parser.common import make_external_id
 from parser.common import strip_html
 
 KST = timezone(timedelta(hours=9))
@@ -37,13 +37,13 @@ class TestStripHtml:
 class TestMakeExternalId:
     def test_deterministic(self):
         url = "https://tech.kakao.com/post/123"
-        assert _make_external_id(url) == _make_external_id(url)
+        assert make_external_id(url) == make_external_id(url)
 
     def test_length_16(self):
-        assert len(_make_external_id("https://example.com")) == 16
+        assert len(make_external_id("https://example.com")) == 16
 
     def test_different_urls_differ(self):
-        assert _make_external_id("https://a.com") != _make_external_id("https://b.com")
+        assert make_external_id("https://a.com") != make_external_id("https://b.com")
 
 
 class TestClassifyJobCategories:

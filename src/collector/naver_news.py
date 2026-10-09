@@ -7,7 +7,6 @@
 - 수집한 데이터는 내부 분석(임베딩·면접 질문 생성)용이며 원문을 외부에 재게시하지 않는다.
 - DMCA takedown 요청 시 해당 데이터를 즉시 삭제할 수 있도록 delete-requests/ 경로를 사용한다.
 """
-import hashlib
 import logging
 import os
 import time
@@ -19,9 +18,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from config import load_naver_news_config
 from core import KST
 from core.circuit_breaker import CircuitOpenError, get_breaker
-from parser.common import strip_html
+from parser.common import make_external_id, strip_html
 
 logger = logging.getLogger(__name__)
 
@@ -29,51 +29,11 @@ NAVER_NEWS_API_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 MAX_DISPLAY = 100
 NEWS_RETENTION_DAYS = 90
 
-# ── 검색 대상 기업 목록 ──
+# ── 설정 파일에서 로드 ──
 
-_DEFAULT_COMPANIES: tuple[str, ...] = (
-    # 네이버 계열
-    "네이버", "네이버웹툰", "네이버클라우드", "네이버파이낸셜", "네이버랩스", "네이버제트",
-    # 카카오 계열
-    "카카오", "카카오뱅크", "카카오페이", "카카오모빌리티",
-    "카카오엔터테인먼트", "카카오엔터프라이즈", "카카오스타일", "카카오게임즈",
-    # 토스 계열
-    "토스", "토스뱅크", "토스증권", "토스페이먼츠",
-    # 삼성
-    "삼성전자", "삼성SDS", "삼성카드",
-    # LG
-    "LG CNS", "LG전자",
-    # SK
-    "SK", "SK C&C", "SK플래닛", "SK텔레콤",
-    # KT / 현대 / 한화 / 롯데 / CJ / 신세계
-    "KT", "현대오토에버", "현대카드", "한화시스템",
-    "롯데정보통신", "롯데ON", "CJ올리브네트웍스", "SSG.COM",
-    # 금융권 — 시중은행
-    "KB국민은행", "신한은행", "하나은행", "우리은행", "우리FIS", "iM뱅크",
-    # 금융권 — 인터넷전문은행 (카카오뱅크·토스뱅크 위에서 포함)
-    "케이뱅크",
-    # 금융권 — 지방은행
-    "부산은행", "경남은행", "전북은행", "광주은행", "제주은행",
-    # 금융권 — 특수/국책은행
-    "NH농협은행", "Sh수협은행", "KDB산업은행", "IBK기업은행",
-    # 금융권 — 카드/증권
-    "신한카드", "현대카드", "하나카드",
-    "미래에셋증권", "한국투자증권", "NH투자증권", "삼성증권", "KB증권",
-    # 주요 IT 기업
-    "라인", "쿠팡", "우아한형제들", "당근",
-)
-
-# 검색어 접미사: 기업명 + 접미사 조합으로 검색
-_SEARCH_SUFFIXES: tuple[str, ...] = ("기술", "AI", "개발")
-
-# ── 노이즈 필터링 ──
-
-_EXCLUDE_TITLE_KEYWORDS: tuple[str, ...] = (
-    "주가", "주식", "주주", "배당", "시세", "종가", "상한가", "하한가",
-    "인사", "승진", "부고", "소송", "재판", "기소", "구속",
-    "부동산", "아파트", "분양",
-    "선거", "후보", "의원", "국회", "정당",
-)
+_NEWS_CONFIG = load_naver_news_config()
+_SEARCH_SUFFIXES: tuple[str, ...] = _NEWS_CONFIG["search_suffixes"]
+_EXCLUDE_TITLE_KEYWORDS: tuple[str, ...] = _NEWS_CONFIG["exclude_news_title_keywords"]
 
 # ── API 호출 간격 (초) ──
 
@@ -82,26 +42,26 @@ _DEFAULT_API_DELAY = 0.1
 
 @dataclass(frozen=True)
 class NewsItem:
-    """뉴스 검색 결과 1건."""
+    """뉴스 검색 결과 1건. @dataclass(frozen=True) 이므로 생성 후 값 변경 불가."""
     company_name: str
     title: str
-    description: str
+    description: str    # 뉴스 요약문
     url: str
-    pub_date: datetime
-    collected_at: str
+    pub_date: datetime  # 발행일 (datetime 객체)
+    collected_at: str   # 수집 시각 (ISO 문자열)
 
 
 def _parse_pub_date(date_str: str) -> datetime:
     """RFC 2822 형식의 pubDate 를 datetime 으로 변환."""
+    # 함수 이름 앞 _ (밑줄): "이 모듈 내부에서만 쓰는 함수"라는 관례.
+    # 외부에서 import 할 수는 있지만, from module import * 할 때 제외된다.
     try:
         return parsedate_to_datetime(date_str)
     except (ValueError, TypeError):
+        # 파싱 실패 시 현재 시각을 반환 (fallback)
         return datetime.now(KST)
 
 
-def _make_external_id(url: str) -> str:
-    """URL 에서 결정적 external_id 를 생성."""
-    return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 def _is_noise(title: str) -> bool:
@@ -130,25 +90,30 @@ def _deadline_from_pub_date(pub_date: datetime) -> int:
 class NaverNewsCollector:
     """네이버 뉴스 검색 API 를 사용해 기업별 기술/사업 동향 뉴스를 수집한다."""
 
+    # __init__ 매개변수 설명:
+    # - client_id, client_secret: * 앞에 있으므로 위치 인자로도 전달 가능
+    # - companies 이후: * 뒤에 있으므로 키워드 전용 인자 (이름 지정 필수)
     def __init__(
         self,
         client_id: str | None = None,
         client_secret: str | None = None,
         *,
-        companies: tuple[str, ...] | None = None,
+        companies: tuple[str, ...],
         search_suffixes: tuple[str, ...] | None = None,
         api_delay: float = _DEFAULT_API_DELAY,
     ):
         self.client_id = client_id or os.environ.get("NAVER_CLIENT_ID", "")
         self.client_secret = client_secret or os.environ.get("NAVER_CLIENT_SECRET", "")
-        self.companies = companies or _DEFAULT_COMPANIES
+        self.companies = companies
         self.search_suffixes = search_suffixes or _SEARCH_SUFFIXES
         self.api_delay = api_delay
 
+        # HTTP 세션 설정 (base.py의 make_crawler_session과 동일한 패턴)
         self.session = requests.Session()
         retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.mount("http://", HTTPAdapter(max_retries=retry))
+        # 네이버 API HUB 인증 헤더 설정
         self.session.headers.update({
             "X-NCP-APIGW-API-KEY-ID": self.client_id,
             "X-NCP-APIGW-API-KEY": self.client_secret,
@@ -157,18 +122,25 @@ class NaverNewsCollector:
 
     def _call_api(self, query: str, display: int = MAX_DISPLAY, start: int = 1) -> dict:
         """네이버 뉴스 검색 API 호출."""
+        # API에 전달할 쿼리 파라미터 딕셔너리
         params = {
-            "query": query,
-            "display": display,
-            "start": start,
-            "sort": "date",
+            "query": query,       # 검색어
+            "display": display,   # 한 번에 가져올 결과 수
+            "start": start,       # 시작 위치 (페이징용)
+            "sort": "date",       # 정렬 기준: 최신순
         }
-        with self._breaker:
+        with self._breaker:  # 서킷 브레이커 보호 하에 실행
+            # session.get(): HTTP GET 요청을 보낸다.
+            # params=params: URL 뒤에 ?query=...&display=... 형태로 자동 추가됨
+            # timeout=10: 10초 안에 응답이 없으면 에러
             resp = self.session.get(
                 NAVER_NEWS_API_URL, params=params, timeout=10,
             )
+            # raise_for_status(): HTTP 응답 코드가 4xx/5xx 이면 예외를 발생시킨다.
             resp.raise_for_status()
+            # .json(): 응답 본문을 JSON → 파이썬 딕셔너리로 변환
             data = resp.json()
+            # "errorCode" in data: 딕셔너리에 해당 키가 있는지 확인하는 in 연산자
             if "errorCode" in data:
                 raise RuntimeError(
                     f"네이버 API 에러: {data.get('errorCode')} - {data.get('errorMessage', '')}"
@@ -242,18 +214,22 @@ class NaverNewsCollector:
         return all_items
 
 
+# 모듈 레벨 함수 (클래스 밖에 정의된 함수): 클래스에 속하지 않는 독립적인 함수.
+# 유틸리티 성격의 데이터 변환 함수에 자주 사용.
 def news_item_to_detail_dict(item: NewsItem) -> dict:
-    """NewsItem 을 S3 저장용 dict 로 변환. JobDetail 호환 형식."""
+    """NewsItem 을 SQS 전달용 dict 로 변환. JobDetail 호환 형식."""
+    # \n\n: 줄바꿈 2개. 제목과 설명 사이에 빈 줄을 넣는다.
     raw_text = f"{item.title}\n\n{item.description}"
+    # 딕셔너리 리터럴을 그대로 반환
     return {
         "source": "naver_news",
-        "external_id": _make_external_id(item.url),
+        "external_id": make_external_id(item.url),
         "url": item.url,
         "company_name": item.company_name,
         "title": item.title,
         "raw_text": raw_text,
-        "tech_stack": [],
+        "tech_stack": [],    # 빈 리스트: 뉴스에는 기술스택 정보가 없으므로
         "deadline": _deadline_from_pub_date(item.pub_date),
         "crawled_at": item.collected_at,
-        "career_level": "",
+        "career_level": "",  # 빈 문자열: 뉴스에는 경력 수준이 없으므로
     }

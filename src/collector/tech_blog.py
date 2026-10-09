@@ -6,23 +6,23 @@ RSS/Atom 피드에서 기술 블로그 글을 수집한다.
   2. 없으면 robots.txt 확인 후 허용된 페이지만 본문 크롤링
   3. 크롤링 차단 시 제목만 저장
 """
-import hashlib
 import logging
-import re
+import re            # 정규표현식: 패턴 기반 문자열 검색/치환
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone  # timezone: UTC 등 타임존 정보
 from email.utils import parsedate_to_datetime
 
-import feedparser
+# ── 외부 패키지 ──
+import feedparser    # RSS/Atom 피드를 파싱하는 라이브러리
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup  # BeautifulSoup: HTML을 파싱해서 원하는 요소를 쉽게 추출하는 라이브러리
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from core import KST
-from crawler.robots_check import RobotsChecker
-from parser.common import strip_html
+from crawler.robots_check import RobotsChecker  # robots.txt 규칙 확인기 (크롤링 허용 여부 판단)
+from parser.common import make_external_id, strip_html
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,9 @@ def _build_domain_to_feed_map() -> dict[str, str]:
     """도메인 → RSS 피드 URL 매핑을 생성한다."""
     mapping: dict[str, str] = {}
     for feed in _DEFAULT_FEEDS:
+        # urlparse: URL을 구성 요소로 분해하는 함수
+        # urlparse("https://d2.naver.com/d2.atom").netloc → "d2.naver.com"
+        # netloc: URL의 도메인 부분
         from urllib.parse import urlparse  # noqa: C0415
         domain = urlparse(feed.feed_url).netloc
         # medium.com은 피드 URL 자체를 키로 (여러 기업이 같은 도메인)
@@ -79,28 +82,35 @@ def _build_domain_to_feed_map() -> dict[str, str]:
     return mapping
 
 
+# 모듈 로딩 시점에 한 번 실행되어 딕셔너리를 만들어 둔다.
 _DOMAIN_TO_FEED: dict[str, str] = _build_domain_to_feed_map()
 
 
 def find_rss_feed_url(article_url: str) -> str | None:
-    """글 URL의 도메인으로 RSS 피드 URL을 찾는다. 없으면 None."""
+    """글 URL의 도메인으로 RSS 피드 URL을 찾는다. 없으면 None.
+
+    반환 타입 str | None: 문자열을 반환하거나 None을 반환할 수 있다는 뜻.
+    """
     from urllib.parse import urlparse  # noqa: C0415
     domain = urlparse(article_url).netloc
 
-    # 직접 매칭
+    # 딕셔너리의 in 연산자: 키가 존재하는지 확인
     if domain in _DOMAIN_TO_FEED:
         return _DOMAIN_TO_FEED[domain]
 
     # medium.com 글은 경로에서 피드 URL 추측
     if domain == "medium.com":
-        path = urlparse(article_url).path  # /daangn/some-post
+        # .path: URL의 경로 부분. "https://medium.com/daangn/post" → "/daangn/post"
+        path = urlparse(article_url).path
+        # strip("/"): 앞뒤의 "/" 제거. "/daangn/post" → "daangn/post"
+        # split("/"): "/"로 나눈다. "daangn/post" → ["daangn", "post"]
         parts = path.strip("/").split("/")
-        if parts:
-            candidate = f"https://medium.com/feed/{parts[0]}"
+        if parts:  # 리스트가 비어있지 않으면
+            candidate = f"https://medium.com/feed/{parts[0]}"  # parts[0]: 리스트의 첫 번째 요소
             if candidate in _DOMAIN_TO_FEED:
                 return candidate
 
-    return None
+    return None  # 아무것도 못 찾으면 None 반환
 
 
 def fetch_content_from_rss(feed_url: str, article_url: str) -> str:
@@ -168,9 +178,6 @@ def _parse_pub_date(entry: dict) -> datetime:
     return datetime.now(KST)
 
 
-def _make_external_id(url: str) -> str:
-    """URL 에서 결정적 external_id 를 생성."""
-    return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 def _extract_rss_content(entry: dict) -> str:
@@ -178,6 +185,7 @@ def _extract_rss_content(entry: dict) -> str:
 
     우선순위: content:encoded (본문 전체) > summary/description
     """
+    # hasattr(객체, 속성이름): 객체에 해당 속성이 존재하는지 확인. True/False 반환.
     # feedparser 는 content:encoded 를 entry.content 리스트에 넣는다
     if hasattr(entry, "content") and entry.content:
         for c in entry.content:
@@ -185,7 +193,8 @@ def _extract_rss_content(entry: dict) -> str:
             if len(text) >= _MIN_CONTENT_LENGTH:
                 return text
 
-    # summary / description
+    # A or B or C: 왼쪽부터 평가해서 True스러운 첫 번째 값을 반환.
+    # summary가 없으면 description을, 그것도 없으면 빈 문자열을 사용.
     summary_raw = entry.get("summary") or entry.get("description") or ""
     return strip_html(summary_raw)
 
@@ -202,6 +211,8 @@ def _make_session() -> requests.Session:
 
 def _fetch_page_content(session: requests.Session, url: str) -> str:
     """URL 에서 본문 텍스트를 추출한다. trafilatura → BeautifulSoup 순으로 시도."""
+    # trafilatura: 웹 페이지에서 본문 텍스트를 자동 추출하는 라이브러리.
+    # 광고, 네비게이션 등을 제거하고 본문만 깔끔하게 추출해 준다.
     import trafilatura  # noqa: C0415
 
     try:
@@ -209,17 +220,28 @@ def _fetch_page_content(session: requests.Session, url: str) -> str:
         resp.raise_for_status()
     except Exception:
         logger.exception("페이지 요청 실패: %s", url)
-        return ""
+        return ""  # 빈 문자열 반환 = 실패
 
+    # apparent_encoding: 응답 본문을 분석해서 추측한 인코딩 (한글 깨짐 방지)
     resp.encoding = resp.apparent_encoding
 
-    text = trafilatura.extract(resp.text)
+    # 1차 시도: trafilatura 로 본문 추출
+    text = trafilatura.extract(resp.text)  # resp.text: 응답 본문을 문자열로
     if text and len(text) >= _MIN_CONTENT_LENGTH:
         return text
 
+    # 2차 시도: BeautifulSoup 으로 HTML 파싱 후 특정 태그에서 추출
+    # "html.parser": 파이썬 내장 HTML 파서 사용
     soup = BeautifulSoup(resp.text, "html.parser")
+    # CSS 선택자로 요소 찾기:
+    #   "article": <article> 태그
+    #   "[class*=content]": class 속성에 "content"가 포함된 요소
     for selector in ["article", "[class*=content]", "[class*=post]", "main"]:
+        # select_one(): CSS 선택자에 매칭되는 첫 번째 요소를 반환. 없으면 None.
         el = soup.select_one(selector)
+        # get_text(): HTML 태그를 제거하고 텍스트만 추출
+        #   strip=True: 각 텍스트 조각의 앞뒤 공백 제거
+        #   separator="\n": 태그 사이에 줄바꿈을 넣어 구분
         if el and len(el.get_text(strip=True)) >= _MIN_CONTENT_LENGTH:
             return el.get_text(separator="\n", strip=True)
 
@@ -290,17 +312,29 @@ _JOB_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# ── 키워드 매칭 최적화: 짧은 키워드는 정규식, 긴 키워드는 단순 포함 검사 ──
+
+# 타입 힌트 해설:
+# dict[str, list[tuple[re.Pattern, str]]]:
+#   "키가 문자열이고 값이 [(정규식패턴, 문자열), ...] 리스트인 딕셔너리"
 _SHORT_KW_PATTERNS: dict[str, list[tuple[re.Pattern, str]]] = {}
 _LONG_KW_LIST: dict[str, list[str]] = {}
 
+# .items(): 딕셔너리의 (키, 값) 쌍을 하나씩 반환하는 메서드.
+# for key, value in dict.items(): 와 같이 두 변수로 언패킹해서 사용.
 for _cat, _keywords in _JOB_CATEGORY_KEYWORDS.items():
     short = []
     long = []
     for kw in _keywords:
         kw_lower = kw.lower()
         if len(kw_lower) <= 3:
+            # 짧은 키워드(3자 이하)는 \b (단어 경계)를 써서 정확한 매칭
+            # 예: "AI"가 "RAIN"에 매칭되지 않도록
+            # re.escape(): 정규식 특수 문자를 이스케이프. "C++" → "C\\+\\+"
+            # rf"...": r(raw) + f(f-string) 동시 사용
             short.append((re.compile(rf"\b{re.escape(kw_lower)}\b"), kw_lower))
         else:
+            # 긴 키워드(4자 이상)는 단순 포함 검사로 충분 (오탐 위험 낮음)
             long.append(kw_lower)
     _SHORT_KW_PATTERNS[_cat] = short
     _LONG_KW_LIST[_cat] = long
@@ -310,15 +344,18 @@ def _classify_job_categories(text: str) -> list[str]:
     """텍스트에서 키워드를 찾아 관련 직무 카테고리를 반환한다."""
     text_lower = text.lower()
     categories: list[str] = []
+    # for category in dict: 딕셔너리를 for로 돌리면 키만 순회한다.
     for category in _JOB_CATEGORY_KEYWORDS:
         found = False
+        # 튜플 언패킹: (pattern, _) 에서 _ 는 "이 값은 안 쓴다"는 관례적 변수 이름.
         for pattern, _ in _SHORT_KW_PATTERNS[category]:
+            # pattern.search(): 문자열 어디에서든 패턴이 매칭되면 Match 객체 반환 (없으면 None)
             if pattern.search(text_lower):
                 found = True
-                break
+                break  # 하나라도 찾으면 더 찾을 필요 없음
         if not found:
             for kw_lower in _LONG_KW_LIST[category]:
-                if kw_lower in text_lower:
+                if kw_lower in text_lower:  # 문자열 포함 검사
                     found = True
                     break
         if found:
@@ -445,15 +482,19 @@ class TechBlogCollector:
 
 def blog_article_to_detail_dict(article: BlogArticle) -> dict:
     """BlogArticle 을 S3 저장용 dict 로 변환. JobDetail 호환 형식."""
+    # 삼항 연산자: content가 있으면 제목+본문, 없으면 제목만
     raw_text = f"{article.title}\n\n{article.content}" if article.content else article.title
     categories = _classify_job_categories(raw_text)
 
     if categories:
+        # ', '.join(리스트): 리스트의 각 요소를 ', '로 연결한 문자열을 만든다.
+        # ["백엔드개발자", "클라우드엔지니어"] → "백엔드개발자, 클라우드엔지니어"
+        # += : 문자열에 이어 붙이기 (raw_text = raw_text + ...)
         raw_text += f"\n\n[직무]\n{', '.join(categories)}"
 
     return {
         "source": "tech_blog",
-        "external_id": _make_external_id(article.url),
+        "external_id": make_external_id(article.url),
         "url": article.url,
         "company_name": article.company_name,
         "title": article.title,
