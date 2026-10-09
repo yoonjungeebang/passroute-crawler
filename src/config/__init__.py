@@ -27,6 +27,9 @@ def load_naver_news_config() -> dict:
     raw = load_yaml("naver_news.yaml")
 
     return {
+        "api_url": raw["api_url"],
+        "retention_days": int(raw["retention_days"]),
+        "api_delay": float(raw["api_delay"]),
         "search_suffixes": tuple(raw["search_suffixes"]),
         "exclude_news_title_keywords": tuple(raw["exclude_news_title_keywords"]),
     }

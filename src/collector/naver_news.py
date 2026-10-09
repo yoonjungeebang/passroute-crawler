@@ -25,19 +25,16 @@ from parser.common import make_external_id, strip_html
 
 logger = logging.getLogger(__name__)
 
-NAVER_NEWS_API_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 MAX_DISPLAY = 100
-NEWS_RETENTION_DAYS = 90
 
 # ── 설정 파일에서 로드 ──
 
 _NEWS_CONFIG = load_naver_news_config()
+NAVER_NEWS_API_URL: str = _NEWS_CONFIG["api_url"]
+NEWS_RETENTION_DAYS: int = _NEWS_CONFIG["retention_days"]
+_DEFAULT_API_DELAY: float = _NEWS_CONFIG["api_delay"]
 _SEARCH_SUFFIXES: tuple[str, ...] = _NEWS_CONFIG["search_suffixes"]
 _EXCLUDE_TITLE_KEYWORDS: tuple[str, ...] = _NEWS_CONFIG["exclude_news_title_keywords"]
-
-# ── API 호출 간격 (초) ──
-
-_DEFAULT_API_DELAY = 0.1
 
 
 @dataclass(frozen=True)
@@ -50,7 +47,6 @@ class NewsItem:
     pub_date: datetime  # 발행일 (datetime 객체)
     collected_at: str   # 수집 시각 (ISO 문자열)
 
-
 def _parse_pub_date(date_str: str) -> datetime:
     """RFC 2822 형식의 pubDate 를 datetime 으로 변환."""
     # 함수 이름 앞 _ (밑줄): "이 모듈 내부에서만 쓰는 함수"라는 관례.
@@ -61,16 +57,12 @@ def _parse_pub_date(date_str: str) -> datetime:
         # 파싱 실패 시 현재 시각을 반환 (fallback)
         return datetime.now(KST)
 
-
-
-
 def _is_noise(title: str) -> bool:
     """제목 기반 노이즈 판별."""
     for kw in _EXCLUDE_TITLE_KEYWORDS:
         if kw in title:
             return True
     return False
-
 
 def _is_relevant(company: str, title: str) -> bool:
     """기업명이 제목에 포함되어야 관련 기사로 판정.
@@ -80,12 +72,10 @@ def _is_relevant(company: str, title: str) -> bool:
     """
     return company in title
 
-
 def _deadline_from_pub_date(pub_date: datetime) -> int:
     """pub_date + 90일을 Unix timestamp 로 변환. 기존 deadline 삭제 로직과 호환."""
     expiry = pub_date + timedelta(days=NEWS_RETENTION_DAYS)
     return int(expiry.timestamp())
-
 
 class NaverNewsCollector:
     """네이버 뉴스 검색 API 를 사용해 기업별 기술/사업 동향 뉴스를 수집한다."""
