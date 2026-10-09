@@ -35,7 +35,7 @@ def search_api(event, context):
     from core.embedding import embed_text  # noqa: C0415
     from core.metrics import MetricsLogger  # noqa: C0415
     from core.secrets import get_naver_credentials  # noqa: C0415
-    from search.naver_realtime import _make_session, search_news  # noqa: C0415
+    from collector.naver_news import make_naver_session, search_news  # noqa: C0415
     from search.pgvector_search import search_jobs  # noqa: C0415
 
     # time.monotonic(): 단조 증가하는 시간값 (초). 경과 시간 측정용.
@@ -83,7 +83,7 @@ def search_api(event, context):
     # 튜플 언패킹: 함수가 튜플을 반환하면 여러 변수에 한번에 대입 가능
     # 예: (id, secret) = ("abc", "xyz") → id="abc", secret="xyz"
     client_id, client_secret = get_naver_credentials()
-    naver_session = _make_session(client_id, client_secret)
+    naver_session = make_naver_session(client_id, client_secret)
     news_results = search_news(naver_session, f"{search_query} 기술", display=_API_CONFIG["search_news_display"])
     metrics.put_duration("NewsApiDuration", t0)
     metrics.put_count("NewsResultCount", len(news_results))
@@ -113,10 +113,13 @@ def search_api(event, context):
 def company_collect(event, context):
     """기업 데이터 수집 API. 면접 방 생성 시 해당 기업의 기술 블로그 + 뉴스를 실시간 수집하여 DB 저장."""
 
-    # import A as B: 모듈이나 함수를 다른 이름(별칭)으로 가져온다.
-    # _make_session as _make_blog_session: 이름 충돌 방지.
-    # 아래 search 모듈에도 _make_session 이 있어서 이름을 바꿔서 import.
-    from collector.naver_news import NaverNewsCollector, news_item_to_detail_dict  # noqa: C0415
+    from collector.naver_news import (  # noqa: C0415
+        NaverNewsCollector,
+        filter_webkr_results,
+        make_naver_session,
+        news_item_to_detail_dict,
+        search_webkr,
+    )
     from collector.tech_blog import (  # noqa: C0415
         _fetch_page_content,
         _make_session as _make_blog_session,
@@ -126,7 +129,6 @@ def company_collect(event, context):
     from core.metrics import MetricsLogger  # noqa: C0415
     from core.secrets import get_naver_credentials  # noqa: C0415
     from crawler.robots_check import RobotsChecker  # noqa: C0415
-    from search.naver_realtime import _make_session, filter_webkr_results, search_webkr  # noqa: C0415
 
     t_total = time.monotonic()
     metrics = MetricsLogger(function_name="company_collect")
@@ -193,7 +195,7 @@ def company_collect(event, context):
     keyword_list = [kw.strip()[:50] for kw in keywords_param.split(",") if kw.strip()][:_MAX_KEYWORDS]
     max_crawl = safe_int(params.get("max_articles", "10"), default=10, min_val=1, max_val=20)
 
-    naver_session = _make_session(client_id, client_secret)
+    naver_session = make_naver_session(client_id, client_secret)
     raw_results: list[dict] = []
 
     if keyword_list:

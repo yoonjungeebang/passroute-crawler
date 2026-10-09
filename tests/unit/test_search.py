@@ -2,7 +2,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from search.naver_realtime import search_news
+from collector.naver_news import search_news
 from search.pgvector_search import search_jobs
 
 
@@ -52,7 +52,7 @@ class TestPgvectorSearch:
 
 
 class TestNaverRealtime:
-    @patch("search.naver_realtime.requests.Session")
+    @patch("collector.naver_news.requests.Session")
     def test_search_news_returns_items(self, mock_session_cls):
         """네이버 뉴스 검색이 결과를 반환한다."""
         mock_session = MagicMock()
