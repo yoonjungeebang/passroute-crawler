@@ -20,18 +20,12 @@ from bs4 import BeautifulSoup  # BeautifulSoup: HTML을 파싱해서 원하는 �
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from config import load_tech_blog_config
 from core import KST
 from crawler.robots_check import RobotsChecker  # robots.txt 규칙 확인기 (크롤링 허용 여부 판단)
 from parser.common import make_external_id, strip_html
 
 logger = logging.getLogger(__name__)
-
-BLOG_RETENTION_DAYS = 365
-_MAX_FETCH_PER_FEED = 5
-_FEED_FILTER_DAYS = timedelta(days=365)
-_MIN_CONTENT_LENGTH = 100
-
-# ── 블로그 피드 설정 ──
 
 
 @dataclass(frozen=True)
@@ -41,28 +35,17 @@ class BlogFeed:
     feed_url: str
 
 
-_DEFAULT_FEEDS: tuple[BlogFeed, ...] = (
-    BlogFeed("네이버", "https://d2.naver.com/d2.atom"),
-    BlogFeed("카카오", "https://tech.kakao.com/feed"),
-    BlogFeed("카카오페이", "https://tech.kakaopay.com/rss.xml"),
-    BlogFeed("카카오뱅크", "https://tech.kakaobank.com/index.xml"),
-    BlogFeed("토스", "https://toss.tech/rss.xml"),
-    BlogFeed("우아한형제들", "https://techblog.woowahan.com/feed"),
-    BlogFeed("당근", "https://medium.com/feed/daangn"),
-    BlogFeed("쿠팡", "https://medium.com/feed/coupang-engineering"),
-    BlogFeed("라인", "https://techblog.lycorp.co.jp/ko/feed/index.xml"),
-    BlogFeed("삼성전자", "https://techblog.samsung.com/rss"),
-    BlogFeed("LG U+", "https://techblog.uplus.co.kr/feed"),
-    BlogFeed("KT Cloud", "https://tech.ktcloud.com/feed"),
-    BlogFeed("NHN", "https://meetup.nhncloud.com/rss"),
-    BlogFeed("마켓컬리", "https://helloworld.kurly.com/rss.xml"),
-    BlogFeed("올리브영", "https://oliveyoung.tech/rss.xml"),
-    BlogFeed("무신사", "https://medium.com/feed/musinsa-tech"),
-    BlogFeed("뱅크샐러드", "https://blog.banksalad.com/rss.xml"),
-    BlogFeed("야놀자", "https://medium.com/feed/yanoljacloud-tech"),
-    BlogFeed("쏘카", "https://tech.socar.kr/feed.xml"),
-    BlogFeed("지마켓", "https://dev.gmarket.com/rss"),
-    BlogFeed("11번가", "https://11st-tech.github.io/rss/"),
+# ── 설정 파일에서 로드 ──
+
+_BLOG_CONFIG = load_tech_blog_config()
+BLOG_RETENTION_DAYS: int = _BLOG_CONFIG["retention_days"]
+_MAX_FETCH_PER_FEED: int = _BLOG_CONFIG["max_fetch_per_feed"]
+_FEED_FILTER_DAYS = timedelta(days=_BLOG_CONFIG["feed_filter_days"])
+_MIN_CONTENT_LENGTH: int = _BLOG_CONFIG["min_content_length"]
+_DEFAULT_REQUEST_DELAY: float = _BLOG_CONFIG["request_delay"]
+_DEFAULT_FEEDS: tuple[BlogFeed, ...] = tuple(
+    BlogFeed(f["company_name"], f["feed_url"])
+    for f in _BLOG_CONFIG["feeds"]
 )
 
 def _build_domain_to_feed_map() -> dict[str, str]:
@@ -143,10 +126,6 @@ _HTTP_HEADERS = {
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept-Encoding": "identity",
 }
-
-# ── 피드 요청 간격 (초) ──
-
-_DEFAULT_REQUEST_DELAY = 0.5
 
 
 @dataclass(frozen=True)
@@ -248,68 +227,9 @@ def _fetch_page_content(session: requests.Session, url: str) -> str:
     return ""
 
 
-# ── 직무 카테고리 키워드 매핑 ──
+# ── 직무 카테고리 키워드 (설정 파일에서 로드) ──
 
-_JOB_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "백엔드개발자": (
-        "백엔드", "backend", "서버 개발", "Spring", "JPA", "Hibernate",
-        "Django", "FastAPI", "NestJS", "gRPC", "REST API", "MSA",
-        "마이크로서비스", "microservice", "트랜잭션", "transaction",
-    ),
-    "프론트엔드개발자": (
-        "프론트엔드", "frontend", "React", "Vue", "Angular", "Next.js",
-        "Nuxt", "웹뷰", "CSS", "컴포넌트", "UI ", "UX ",
-        "디자인 시스템", "design system",
-    ),
-    "웹개발자": (
-        "웹 개발", "web dev", "풀스택", "full-stack", "fullstack",
-        "HTML", "웹 성능", "웹 최적화",
-    ),
-    "앱개발자": (
-        "iOS", "Android", "Swift", "Kotlin", "Flutter", "React Native",
-        "모바일", "mobile", "앱 개발",
-    ),
-    "데이터엔지니어": (
-        "데이터 엔지니어", "data engineer", "Kafka", "Spark", "Airflow",
-        "ETL", "데이터 파이프라인", "data pipeline", "Flink", "Hadoop",
-        "데이터 웨어하우스", "StarRocks", "Presto", "Hive",
-    ),
-    "데이터사이언티스트": (
-        "데이터 사이언", "data scien", "데이터 분석", "data analy",
-        "A/B 테스트", "AB테스트", "추천 시스템", "recommendation",
-        "통계", "statistic", "지표", "metric",
-    ),
-    "소프트웨어개발자": (
-        "소프트웨어 개발", "software dev", "리팩토링", "refactor",
-        "코드 리뷰", "code review", "아키텍처", "architecture",
-        "모노레포", "monorepo", "레거시", "legacy",
-    ),
-    "게임개발자": (
-        "게임 개발", "game dev", "Unity", "Unreal", "렌더링", "rendering",
-        "게임 서버", "게임 클라이언트",
-    ),
-    "AI/ML엔지니어": (
-        "AI", "ML", "딥러닝", "deep learning", "LLM", "GPT", "Claude",
-        "모델 학습", "model training", "신경망", "neural",
-        "transformer", "파인튜닝", "fine-tun", "임베딩", "embedding",
-        "RAG", "벡터", "vector",
-    ),
-    "클라우드엔지니어": (
-        "AWS", "GCP", "Azure", "Kubernetes", "k8s", "Docker",
-        "클라우드", "cloud", "인프라", "infra", "DevOps", "데브옵스",
-        "Terraform", "CI/CD", "SRE", "모니터링", "monitoring",
-    ),
-    "MLOps엔지니어": (
-        "MLOps", "모델 서빙", "model serving", "SageMaker",
-        "ML 파이프라인", "ML pipeline", "모델 배포", "model deploy",
-        "ONNX", "TensorRT",
-    ),
-    "AI서비스개발자": (
-        "AI 서비스", "AI 에이전트", "AI agent", "챗봇", "chatbot",
-        "프롬프트", "prompt", "생성형 AI", "generative AI",
-        "바이브코딩", "vibe coding", "AI 코딩", "Copilot",
-    ),
-}
+_JOB_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = _BLOG_CONFIG["job_category_keywords"]
 
 
 # ── 키워드 매칭 최적화: 짧은 키워드는 정규식, 긴 키워드는 단순 포함 검사 ──

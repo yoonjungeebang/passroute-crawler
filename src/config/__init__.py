@@ -33,3 +33,22 @@ def load_naver_news_config() -> dict:
         "search_suffixes": tuple(raw["search_suffixes"]),
         "exclude_news_title_keywords": tuple(raw["exclude_news_title_keywords"]),
     }
+
+
+def load_tech_blog_config() -> dict:
+    """기술 블로그 설정을 로드한다."""
+    raw = load_yaml("tech_blog.yaml")
+
+    job_category_keywords = {
+        cat: tuple(kws) for cat, kws in raw["job_category_keywords"].items()
+    }
+
+    return {
+        "retention_days": int(raw["retention_days"]),
+        "max_fetch_per_feed": int(raw["max_fetch_per_feed"]),
+        "feed_filter_days": int(raw["feed_filter_days"]),
+        "min_content_length": int(raw["min_content_length"]),
+        "request_delay": float(raw["request_delay"]),
+        "feeds": raw["feeds"],
+        "job_category_keywords": job_category_keywords,
+    }
