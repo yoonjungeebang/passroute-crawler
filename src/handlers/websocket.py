@@ -127,17 +127,9 @@ def ws_collect(event, context):
 
     # 원자적 중복 수집 방지: ConditionExpression으로 race condition 해결
     need_collect = _try_claim_collect(dynamodb, company, now)
+    mode = "collect" if need_collect else "cache_only"
 
-    if not need_collect:
-        _send_to_client(endpoint, connection_id, {
-            "status": "already_collected",
-            "company": company,
-            "message": "최근 수집된 데이터가 있습니다. 조회 API로 확인하세요.",
-        })
-        logger.info("중복 수집 스킵: company=%s", company)
-        return {"statusCode": 200}
-
-    # SQS에 수집 요청 적재 (connection_id 제거 — 워커가 GSI로 전체 연결에 푸시)
+    # SQS에 요청 적재 (워커가 캐시 반환 또는 실시간 수집 수행)
     sqs = boto3.client("sqs")
     try:
         sqs.send_message(
@@ -148,15 +140,16 @@ def ws_collect(event, context):
                 "tech_stack": tech_stack,
                 "keywords": keywords,
                 "max_articles": max_articles,
+                "mode": mode,
             }, ensure_ascii=False),
         )
     except Exception:
-        logger.exception("SQS 수집 요청 전송 실패: company=%s", company)
+        logger.exception("SQS 요청 전송 실패: company=%s", company)
         _send_to_client(endpoint, connection_id, {"status": "error", "message": "요청 처리 중 오류가 발생했습니다."})
         return {"statusCode": 500}
 
     _send_to_client(endpoint, connection_id, {"status": "accepted", "company": company})
-    logger.info("수집 요청 접수: company=%s, connection=%s", company, connection_id)
+    logger.info("수집 요청 접수: company=%s, mode=%s, connection=%s", company, mode, connection_id)
     return {"statusCode": 200}
 
 

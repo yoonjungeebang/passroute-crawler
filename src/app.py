@@ -7,8 +7,10 @@ Handler 가 app.xxx 를 참조하므로,
   EventBridge cron → [job_list_collector] → SQS → [source_collect_worker]
     → SQS → [job_crawl] → SQS → [embed_worker] → SQS → [db_loader] → PostgreSQL
 
-기업별 실시간 수집:
-  WebSocket [ws_collect] → SQS → [company_collect_worker] → PostgreSQL + WebSocket 푸시
+기업별 실시간 수집 (stale-while-revalidate):
+  WebSocket [ws_collect] → SQS → [company_collect_worker]
+    → 캐시 있으면 즉시 WebSocket 푸시(cached) → 실시간 수집 → 최신 데이터 푸시(done)
+    → 쿨다운 중이면 캐시만 반환(cache_only)
 
 조회/관리:
   API Gateway → [company_query]

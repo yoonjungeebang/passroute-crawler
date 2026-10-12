@@ -45,8 +45,26 @@ def company_collect_worker(event, context):
             tech_stack_param = message.get("tech_stack", "")
             keywords_param = message.get("keywords", "")
             max_articles = message.get("max_articles", "10")
+            mode = message.get("mode", "collect")
 
-            logger.info("수집 시작: company=%s", company)
+            # 캐시 데이터가 있으면 즉시 푸시 (사용자 대기 시간 최소화)
+            cached = _get_cached_data(company)
+            if cached:
+                _push_to_all_connections(company, cached, status="cached")
+                logger.info("캐시 반환: company=%s, 뉴스 %d건, 블로그 %d건",
+                            company, len(cached["news"]), len(cached["tech_articles"]))
+
+            # cache_only 모드: 캐시만 반환하고 종료
+            if mode == "cache_only":
+                if not cached:
+                    _push_to_all_connections(
+                        company,
+                        {"news": [], "tech_articles": []},
+                        status="no_data",
+                    )
+                continue
+
+            logger.info("실시간 수집 시작: company=%s", company)
 
             result = _collect_company_data(
                 company=company,
@@ -59,7 +77,7 @@ def company_collect_worker(event, context):
             _update_collect_status(company, "done")
 
             # company GSI로 해당 기업을 요청한 전체 연결에 푸시
-            _push_to_all_connections(company, result)
+            _push_to_all_connections(company, result, status="done")
 
             logger.info("수집 완료: company=%s, 뉴스 %d건, 블로그 %d건",
                         company, len(result["news"]), len(result["tech_articles"]))
@@ -252,7 +270,39 @@ def _update_collect_status(company: str, status: str) -> None:
         logger.exception("수집 상태 업데이트 실패: %s", company)
 
 
-def _push_to_all_connections(company: str, result: dict) -> None:
+def _get_cached_data(company: str) -> dict | None:
+    """PostgreSQL에서 기존 수집 데이터를 조회한다. 데이터가 없으면 None 반환."""
+    pg = get_pg_storage()
+    pg._ensure_alive()
+
+    query = """
+    SELECT url, title, document, source
+    FROM job_descriptions
+    WHERE company_name = %(company)s
+      AND source IN ('naver_news', 'tech_blog_webkr')
+      AND (deadline = 0 OR deadline > EXTRACT(EPOCH FROM NOW()))
+    ORDER BY crawled_at DESC
+    LIMIT 50
+    """
+    with pg.conn.cursor() as cur:
+        cur.execute(query, {"company": company})
+        rows = cur.fetchall()
+
+    if not rows:
+        return None
+
+    news = []
+    tech_articles = []
+    for url, title, document, source in rows:
+        if source == "naver_news":
+            news.append({"title": title, "url": url, "company_name": company, "description": document})
+        else:
+            tech_articles.append({"title": title, "url": url, "content": document, "source": source})
+
+    return {"news": news, "tech_articles": tech_articles}
+
+
+def _push_to_all_connections(company: str, result: dict, *, status: str = "done") -> None:
     """해당 company를 요청한 모든 WebSocket 연결에 결과를 푸시한다."""
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(_CONNECTIONS_TABLE)
@@ -273,7 +323,7 @@ def _push_to_all_connections(company: str, result: dict) -> None:
         return
 
     payload = json.dumps({
-        "status": "done",
+        "status": status,
         "company": company,
         "news": result["news"],
         "tech_articles": result["tech_articles"],
