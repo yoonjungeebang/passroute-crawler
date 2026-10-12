@@ -3,10 +3,12 @@ import dataclasses
 import json
 import logging
 import time
-
 from crawler.base import JobDetail
-
+from core.normalize import normalize_company_name
+from config import load_dedup_config
 from ._common import get_pg_storage
+
+_DEDUP_CONFIG = load_dedup_config()
 
 _REQUIRED_RAW_FIELDS: dict[str, type | tuple[type, ...]] = {
     "source": str,
@@ -19,7 +21,6 @@ _REQUIRED_RAW_FIELDS: dict[str, type | tuple[type, ...]] = {
     "deadline": int,
     "crawled_at": str,
 }
-
 
 def _validate_raw_schema(data: dict) -> list[str]:
     """raw JSON 데이터의 스키마를 검증한다. 위반 목록을 반환."""
@@ -104,6 +105,23 @@ def _load_record(data: dict, pg) -> None:
     detail = JobDetail(**kwargs)
     embedding = data.get("embedding")
     embedding_status = data.get("embedding_status", "ok")
+
+    if embedding and embedding_status == "ok":
+        company_norm = normalize_company_name(detail.company_name)
+        dup = pg.find_duplicate(
+            company_name_norm=company_norm,
+            embedding=embedding,
+            exclude_url=detail.url,
+            threshold=_DEDUP_CONFIG["similarity_threshold"],
+        )
+        if dup:
+            logger.info(
+                "중복 감지 (skip): %s [%s] ~ %s [%s] (distance=%.4f) trace_id=%s",
+                detail.url, detail.source,
+                dup["url"], dup["source"], dup["distance"], trace_id,
+            )
+            return
+
     pg.save(detail, embedding=embedding, embedding_status=embedding_status)
 
     logger.info("DB 적재 완료: source=%s id=%s trace_id=%s",

@@ -2,9 +2,7 @@
 import json
 import logging
 import time
-
 import boto3
-
 from ._common import required_env
 
 logger = logging.getLogger(__name__)
@@ -17,7 +15,6 @@ def embed_worker(event, context):
     불필요한 재처리를 방지한다.
     """
     from core.embedding import embed_text  # noqa: C0415
-    from parser.common import build_document  # noqa: C0415
     from core.metrics import MetricsLogger  # noqa: C0415
 
     t_total = time.monotonic()
@@ -41,7 +38,13 @@ def embed_worker(event, context):
             embedding_failed = False
             try:
                 t0 = time.monotonic()
-                document = build_document(data["raw_text"], tuple(data.get("tech_stack", [])))
+                parts = []
+                if data["raw_text"]:
+                    parts.append(data["raw_text"])
+                tech_stack = data.get("tech_stack", [])
+                if tech_stack:
+                    parts.append(f"[기술스택]\n{', '.join(tech_stack)}")
+                document = "\n\n".join(parts)
                 embedding = embed_text(document)
                 metrics.put_duration("EmbeddingDuration", t0)
                 data["embedding"] = embedding

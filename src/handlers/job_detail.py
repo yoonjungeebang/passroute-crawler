@@ -4,14 +4,11 @@ import json
 import logging
 import random
 import time
-
 import boto3
-
 from core.circuit_breaker import CircuitOpenError, get_breaker
 from crawler.base import JobDetail, JobListingRef
 from crawler.registry import get_crawler
 from crawler.validation import CrawlValidationError
-
 from ._common import required_env
 
 logger = logging.getLogger(__name__)
@@ -34,7 +31,12 @@ def job_crawl(event, context):
     embed_queue_url = required_env("EMBED_QUEUE_URL")
 
     for record in event["Records"]:
-        message = json.loads(record["body"])
+        try:
+            message = json.loads(record["body"])
+        except (json.JSONDecodeError, TypeError):
+            logger.error("SQS 메시지 JSON 파싱 실패: body=%s", record.get("body"))
+            continue
+
         trace_id = message.get("trace_id", "")
         ref = JobListingRef(
             source=message["source"],
