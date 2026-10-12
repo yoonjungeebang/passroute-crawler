@@ -3,24 +3,6 @@
 EMF 는 구조화된 JSON 로그를 CloudWatch Logs 에 출력하면,
 CloudWatch 가 자동으로 메트릭을 추출한다. 별도 API 호출이 없으므로
 추가 비용과 지연이 발생하지 않는다.
-
-사용법::
-
-    from core.metrics import MetricsLogger
-
-    metrics = MetricsLogger(function_name="search_api")
-    metrics.set_dimension("Source", "jumpit")
-
-    t0 = time.monotonic()
-    result = embed_text(query)
-    metrics.put_duration("EmbeddingDuration", t0)
-
-    metrics.put_metric("ResultCount", len(results), "Count")
-    metrics.flush()  # 반드시 호출하여 로그 출력
-
-참고:
-    - https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
-    - Lambda 의 LogFormat: JSON 설정(template.yaml Globals)과 호환됨
 """
 import json
 import logging
@@ -43,9 +25,6 @@ class MetricsLogger:
         self._values: dict[str, float] = {}
         self._dimensions: dict[str, str] = {"FunctionName": function_name}
 
-    def set_dimension(self, key: str, value: str) -> None:
-        """추가 차원을 설정한다. flush() 전에 호출."""
-        self._dimensions[key] = value
 
     def put_metric(self, name: str, value: float, unit: str = "None") -> None:
         """메트릭 값을 기록한다."""

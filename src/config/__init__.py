@@ -15,25 +15,22 @@ def load_yaml(filename: str) -> dict:
         return yaml.safe_load(f)
 
 
-def load_naver_news_config() -> dict:
-    """네이버 뉴스 설정을 로드한다.
-
-    Returns:
-        {
-            "search_suffixes": tuple[str, ...],
-            "exclude_news_title_keywords": tuple[str, ...],
-        }
-    """
-    raw = load_yaml("naver_news.yaml")
+def load_naver_config() -> dict:
+    """네이버 API HUB 통합 설정을 로드한다."""
+    raw = load_yaml("naver.yaml")
 
     return {
-        "api_url": raw["api_url"],
+        "news_url": raw["news_url"],
+        "webkr_url": raw["webkr_url"],
+        "timeout": int(raw["timeout"]),
+        "retry_total": int(raw["retry_total"]),
+        "retry_backoff_factor": float(raw["retry_backoff_factor"]),
         "retention_days": int(raw["retention_days"]),
         "api_delay": float(raw["api_delay"]),
         "max_display": int(raw["max_display"]),
-        "api_timeout": int(raw["api_timeout"]),
         "search_suffixes": tuple(raw["search_suffixes"]),
         "exclude_news_title_keywords": tuple(raw["exclude_news_title_keywords"]),
+        "min_description_length": int(raw["min_description_length"]),
     }
 
 
@@ -100,17 +97,13 @@ def load_circuit_breaker_config() -> dict:
     }
 
 
-def load_search_config() -> dict:
-    """네이버 실시간 검색 설정을 로드한다."""
-    raw = load_yaml("search.yaml")
+
+def load_dedup_config() -> dict:
+    """중복 감지 설정을 로드한다."""
+    raw = load_yaml("dedup.yaml")
 
     return {
-        "news_url": raw["news_url"],
-        "webkr_url": raw["webkr_url"],
-        "timeout": int(raw["timeout"]),
-        "retry_total": int(raw["retry_total"]),
-        "retry_backoff_factor": float(raw["retry_backoff_factor"]),
-        "min_description_length": int(raw["min_description_length"]),
+        "similarity_threshold": float(raw["similarity_threshold"]),
     }
 
 
@@ -119,11 +112,15 @@ def load_api_config() -> dict:
     raw = load_yaml("api.yaml")
 
     return {
-        "max_query_length": int(raw["max_query_length"]),
         "max_company_length": int(raw["max_company_length"]),
+        "max_position_length": int(raw.get("max_position_length", 30)),
+        "max_tech_stack": int(raw.get("max_tech_stack", 10)),
         "max_keywords": int(raw["max_keywords"]),
         "blog_crawl_delay": float(raw["blog_crawl_delay"]),
-        "search_news_display": int(raw["search_news_display"]),
         "webkr_keyword_display": int(raw["webkr_keyword_display"]),
         "webkr_default_display": int(raw["webkr_default_display"]),
+        "ws_connection_ttl": int(raw.get("ws_connection_ttl", 3600)),
+        "collect_cooldown": int(raw.get("collect_cooldown", 300)),
     }
+
+

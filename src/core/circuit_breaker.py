@@ -95,10 +95,6 @@ class CircuitBreaker:
         self._failure_count = 0
         self._state = CircuitState.CLOSED
 
-    def record_failure(self, exc: Exception | None = None) -> None:
-        """with 블록 바깥에서 실패를 기록한다. 검증 실패 등에 사용."""
-        self._on_failure()
-
     def _on_failure(self) -> None:
         self._failure_count += 1
         self._last_failure_time = time.monotonic()
