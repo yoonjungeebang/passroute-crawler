@@ -66,6 +66,19 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
+  # ── DynamoDB: 기업별 요청 횟수 (프리워밍 판단용) ──
+  CompanyRequestCountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: passroute-company-request-counts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company
+          KeyType: HASH
+
   # ── WebSocket Lambda 핸들러 ──
   WsConnectFunction:
     Type: AWS::Serverless::Function
@@ -103,6 +116,7 @@ Resources:
         Variables:
           WS_CONNECTIONS_TABLE: !Ref WebSocketConnectionsTable
           COLLECT_STATUS_TABLE: !Ref CollectStatusTable
+          COMPANY_REQUEST_COUNTS_TABLE: !Ref CompanyRequestCountsTable
           COMPANY_COLLECT_QUEUE_URL: !Ref CompanyCollectQueueUrl
           WS_API_ENDPOINT: !Sub "https://${CompanyWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
       Policies:
@@ -110,6 +124,8 @@ Resources:
             TableName: !Ref WebSocketConnectionsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref CollectStatusTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CompanyRequestCountsTable
         - SQSSendMessagePolicy:
             QueueName: !Ref CompanyCollectQueueName
 
@@ -253,3 +269,5 @@ Outputs:
     Value: !Ref CollectStatusTable
   CollectStatusTableArn:
     Value: !GetAtt CollectStatusTable.Arn
+  CompanyRequestCountsTableName:
+    Value: !Ref CompanyRequestCountsTable

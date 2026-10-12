@@ -8,4 +8,4 @@ blog_crawl_delay: 0.5       # 블로그 크롤링 간 대기 (초)
 webkr_keyword_display: 5    # 키워드별 웹문서 결과 수
 webkr_default_display: 10   # 기본 웹문서 결과 수
 ws_connection_ttl: 3600     # WebSocket 연결 TTL (초)
-collect_cooldown: 300       # 같은 company 재수집 방지 쿨다운 (초)
+collect_cooldown: 7200      # 같은 company 재수집 방지 쿨다운 (초, 2시간)

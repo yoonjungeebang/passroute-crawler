@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _TABLE_NAME = os.environ.get("WS_CONNECTIONS_TABLE", "passroute-ws-connections")
 _COLLECT_STATUS_TABLE = os.environ.get("COLLECT_STATUS_TABLE", "passroute-collect-status")
+_REQUEST_COUNTS_TABLE = os.environ.get("COMPANY_REQUEST_COUNTS_TABLE", "passroute-company-request-counts")
 _QUEUE_URL = os.environ.get("COMPANY_COLLECT_QUEUE_URL", "")
 _WS_CONNECTION_TTL = int(_API_CONFIG.get("ws_connection_ttl", 3600))
 _COLLECT_COOLDOWN = int(_API_CONFIG.get("collect_cooldown", 300))
@@ -125,6 +126,9 @@ def ws_collect(event, context):
         "ttl": ttl,
     })
 
+    # 기업별 요청 횟수 기록 (향후 프리워밍 판단용)
+    _increment_request_count(company)
+
     # 원자적 중복 수집 방지: ConditionExpression으로 race condition 해결
     need_collect = _try_claim_collect(dynamodb, company, now)
     mode = "collect" if need_collect else "cache_only"
@@ -197,3 +201,17 @@ def _send_to_client(endpoint: str, connection_id: str, data: dict) -> None:
         logger.info("연결 이미 끊어짐: %s", connection_id)
     except Exception:
         logger.exception("WebSocket 전송 실패: %s", connection_id)
+
+
+def _increment_request_count(company: str) -> None:
+    """기업별 요청 횟수를 원자적으로 증가시킨다. 프리워밍 판단 데이터로 활용."""
+    dynamodb = boto3.resource("dynamodb")
+    table = dynamodb.Table(_REQUEST_COUNTS_TABLE)
+    try:
+        table.update_item(
+            Key={"company": company},
+            UpdateExpression="ADD requestCount :inc",
+            ExpressionAttributeValues={":inc": 1},
+        )
+    except Exception:
+        logger.exception("요청 횟수 기록 실패: %s", company)
