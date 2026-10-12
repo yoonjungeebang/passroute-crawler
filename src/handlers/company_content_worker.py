@@ -23,6 +23,7 @@ def safe_int(value: str, *, default: int, min_val: int = 1, max_val: int = 100) 
         return default
     return max(min_val, min(n, max_val))
 
+
 logger = logging.getLogger(__name__)
 
 _COLLECT_STATUS_TABLE = os.environ.get("COLLECT_STATUS_TABLE", "passroute-collect-status")
@@ -278,7 +279,7 @@ def _update_collect_status(collect_key: str, status: str) -> None:
             "ttl": now + cooldown + 60,
         })
     except Exception:
-        logger.exception("수집 상태 업데이트 실패: %s", company)
+        logger.exception("수집 상태 업데이트 실패: %s", collect_key)
 
 
 def _get_cached_data(company: str) -> dict | None:

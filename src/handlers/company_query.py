@@ -6,6 +6,7 @@ from ._common import _API_CONFIG, get_pg_storage
 
 MAX_COMPANY_LENGTH: int = _API_CONFIG["max_company_length"]
 
+
 def api_error(status: int, message: str) -> dict:
     """API Gateway 에러 응답을 생성한다."""
     return {
@@ -14,7 +15,9 @@ def api_error(status: int, message: str) -> dict:
         "body": json.dumps({"error": message}),
     }
 
+
 logger = logging.getLogger(__name__)
+
 
 def company_query(event, context):
     """기업 데이터 조회 API. DB에 저장된 뉴스/블로그를 조회하여 즉시 응답한다."""

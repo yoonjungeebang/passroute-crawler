@@ -181,16 +181,13 @@ def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
                 "updatedAt": now,
                 "ttl": now + _COLLECT_COOLDOWN + 60,
             },
-            ConditionExpression=(
-                Attr("collectKey").not_exists()
-                | Attr("updatedAt").lt(cutoff)
-            ),
+            ConditionExpression=(Attr("collectKey").not_exists() | Attr("updatedAt").lt(cutoff)),
         )
         return True
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
         return False
     except Exception:
-        logger.exception("수집 상태 원자적 기록 실패: %s", company)
+        logger.exception("수집 상태 원자적 기록 실패: %s", collect_key)
         return False
 
 
