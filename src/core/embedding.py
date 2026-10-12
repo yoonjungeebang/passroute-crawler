@@ -1,14 +1,15 @@
-"""ONNX 양자화 임베딩 모듈. Lambda 에서 JD 임베딩을 계산하고 S3 에 저장할 때 사용."""
+"""ONNX 양자화 임베딩 모듈. Lambda 에서 텍스트를 벡터로 변환할 때 사용."""
 import logging
-import os
+
+from config import load_embedding_config
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "snunlp/KR-SBERT-V40K-klueNLI-augSTS"
-_MODEL_DIR = os.environ.get("EMBEDDING_MODEL_DIR", "/app/models")
-_ONNX_MODEL_PATH = os.path.join(_MODEL_DIR, "kr-sbert-uint8.onnx")
-_TOKENIZER_PATH = os.path.join(_MODEL_DIR, "tokenizer")
-_MAX_CHUNK_TOKENS = 510  # 512 - [CLS] - [SEP]
+_EMB_CONFIG = load_embedding_config()
+EMBEDDING_MODEL: str = _EMB_CONFIG["model_name"]
+_ONNX_MODEL_PATH: str = _EMB_CONFIG["onnx_path"]
+_TOKENIZER_PATH: str = _EMB_CONFIG["tokenizer_path"]
+_MAX_CHUNK_TOKENS: int = _EMB_CONFIG["max_chunk_tokens"]
 
 _session = None
 _tokenizer = None
@@ -71,7 +72,7 @@ def _chunk_by_paragraphs(text: str) -> list[str]:
     return chunks or [text or " "]
 
 
-_INFERENCE_BATCH_SIZE = 8
+_INFERENCE_BATCH_SIZE: int = _EMB_CONFIG["inference_batch_size"]
 
 
 def _infer_batch(chunks: list[str]) -> tuple:
@@ -126,13 +127,3 @@ def embed_text(text: str) -> list[float]:
 
     norm = max(float(np.linalg.norm(weighted_embedding)), 1e-9)
     return (weighted_embedding / norm).tolist()
-
-
-def build_document(raw_text: str, tech_stack: tuple[str, ...]) -> str:
-    """raw_text + tech_stack 을 임베딩 대상 document 문자열로 조합."""
-    parts: list[str] = []
-    if raw_text:
-        parts.append(raw_text)
-    if tech_stack:
-        parts.append(f"[기술스택]\n{', '.join(tech_stack)}")
-    return "\n\n".join(parts)

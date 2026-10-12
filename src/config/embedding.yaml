@@ -1,0 +1,8 @@
+# 임베딩 모델 설정
+
+model_name: "snunlp/KR-SBERT-V40K-klueNLI-augSTS"
+model_dir: "/app/models"
+onnx_filename: "kr-sbert-uint8.onnx"
+tokenizer_dirname: "tokenizer"
+max_chunk_tokens: 510   # 512 - [CLS] - [SEP]
+inference_batch_size: 8

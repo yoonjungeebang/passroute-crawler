@@ -1,15 +1,19 @@
 """크롤러 추상 클래스 + 페이지 순회 공통 로직."""
 import logging
+import os
 import random
 import time
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import ClassVar
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from config import load_crawler_config
 from core.circuit_breaker import CircuitOpenError, get_breaker
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,7 @@ class JobDetail:
                     f"JobDetail.{field_name}이 비어있음: "
                     f"source={self.source}, id={self.external_id}"
                 )
+
         if len(self.raw_text.strip()) < 20:
             raise ValueError(
                 f"raw_text가 너무 짧음({len(self.raw_text.strip())}자): "
@@ -55,10 +60,13 @@ class JobDetail:
             )
 
 
-DEFAULT_DELAY_MIN = 1.0
-DEFAULT_DELAY_MAX = 2.5
-DEFAULT_MAX_PAGES = 500
-DEFAULT_STALE_PAGE_THRESHOLD = 2
+# ── 설정 파일에서 로드 ──
+
+_CRAWLER_CONFIG = load_crawler_config()
+DEFAULT_DELAY_MIN: float = _CRAWLER_CONFIG["delay_min"]
+DEFAULT_DELAY_MAX: float = _CRAWLER_CONFIG["delay_max"]
+DEFAULT_MAX_PAGES: int = _CRAWLER_CONFIG["max_pages"]
+DEFAULT_STALE_PAGE_THRESHOLD: int = _CRAWLER_CONFIG["stale_page_threshold"]
 
 
 def make_crawler_session(*, extra_headers: dict | None = None) -> requests.Session:
@@ -81,24 +89,27 @@ def make_crawler_session(*, extra_headers: dict | None = None) -> requests.Sessi
 
 
 class JobCrawler(ABC):
+
     source: ClassVar[str]
     base_url: ClassVar[str] = ""
 
     def __init__(
         self,
         *,
-        delay_min: float = DEFAULT_DELAY_MIN,
-        delay_max: float = DEFAULT_DELAY_MAX,
-        max_pages: int = DEFAULT_MAX_PAGES,
+        delay_min: float | None = None,
+        delay_max: float | None = None,
+        max_pages: int | None = None,
         stale_page_threshold: int = DEFAULT_STALE_PAGE_THRESHOLD,
         exclude_title_keywords: tuple[str, ...] = (),
     ):
-        self.delay_min = delay_min
-        self.delay_max = delay_max
-        self.max_pages = max_pages
+        prefix = self.source.upper()
+        self.delay_min = delay_min if delay_min is not None else float(os.environ.get(f"{prefix}_DELAY_MIN", DEFAULT_DELAY_MIN))
+        self.delay_max = delay_max if delay_max is not None else float(os.environ.get(f"{prefix}_DELAY_MAX", DEFAULT_DELAY_MAX))
+        self.max_pages = max_pages if max_pages is not None else int(os.environ.get(f"{prefix}_MAX_PAGES", DEFAULT_MAX_PAGES))
         self.stale_page_threshold = stale_page_threshold
         self.exclude_title_keywords = exclude_title_keywords
         self._breaker = get_breaker(self.source)
+        self.session = make_crawler_session()
 
     @abstractmethod
     def fetch_listings_page(self, page: int) -> list[JobListingRef]: ...
@@ -154,10 +165,34 @@ class JobCrawler(ABC):
         return all_refs
 
     def _is_excluded_title(self, title: str) -> bool:
+        """제목에 제외 키워드가 포함되어 있는지 확인."""
         if not self.exclude_title_keywords:
             return False
         lowered = title.lower()
         return any(kw.lower() in lowered for kw in self.exclude_title_keywords)
 
     def _delay(self) -> None:
+        """크롤링 간 랜덤 대기."""
         time.sleep(random.uniform(self.delay_min, self.delay_max))
+
+    @staticmethod
+    def _parse_deadline(deadline_str: str) -> int:
+        """ISO 8601 마감일 문자열을 Unix timestamp 로 변환. 파싱 실패 시 0(상시채용)."""
+        if not deadline_str:
+            return 0
+        try:
+            dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except (ValueError, TypeError):
+            return 0
+
+    @staticmethod
+    def _parse_career(data: dict) -> str:
+        """minCareer/maxCareer 필드로 경력 구간 문자열을 생성한다."""
+        min_career = data.get("minCareer", -1)
+        max_career = data.get("maxCareer", -1)
+        if min_career <= 0 and max_career <= 0:
+            return "신입"
+        if min_career <= 0:
+            return f"신입~{max_career}년"
+        return f"{min_career}~{max_career}년"

@@ -1,11 +1,6 @@
-sAWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  passroute-crawler 메시징 (SQS + EventBridge)
-
-Parameters:
-  CrawlerDataBucketName:
-    Type: String
-    Description: S3 버킷명 (EventBridge 이벤트 패턴용)
+  passroute-crawler 메시징 (SQS)
 
 Resources:
   # ── SQS: 공고 단위 상세 크롤링 큐 ──
@@ -31,7 +26,7 @@ Resources:
         sourceQueueArns:
           - !GetAtt JobDetailQueue.Arn
 
-  # ── SQS: 임베딩 큐 (S3 raw/ 이벤트 → embed_worker) ──
+  # ── SQS: 임베딩 큐 (job_crawl → embed_worker) ──
   EmbedQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -54,7 +49,7 @@ Resources:
         sourceQueueArns:
           - !GetAtt EmbedQueue.Arn
 
-  # ── SQS: DB 적재 큐 (S3 parsed/ 이벤트 → db_loader) ──
+  # ── SQS: DB 적재 큐 (embed_worker → db_loader) ──
   DbLoadQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -100,107 +95,28 @@ Resources:
         sourceQueueArns:
           - !GetAtt SourceCollectQueue.Arn
 
-  # ── EventBridge 전달 실패용 DLQ ──
-  EventBridgeDLQ:
+  # ── SQS: 기업별 수집 큐 (WebSocket → company_collect_worker) ──
+  CompanyCollectQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: passroute-eventbridge-dlq
+      QueueName: passroute-company-collect-queue
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CompanyCollectDLQ.Arn
+        maxReceiveCount: 3
+
+  CompanyCollectDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: passroute-company-collect-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-
-  EventBridgeDLQPolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      Queues:
-        - !Ref EventBridgeDLQ
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sqs:SendMessage
-            Resource: !GetAtt EventBridgeDLQ.Arn
-
-  # ── EventBridge: S3 raw/ → EmbedQueue ──
-  S3ToEmbedRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: passroute-s3-to-embed
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.s3
-        detail-type:
-          - "Object Created"
-        detail:
-          bucket:
-            name:
-              - !Ref CrawlerDataBucketName
-          object:
-            key:
-              - prefix: "raw/"
-      Targets:
-        - Id: EmbedQueueTarget
-          Arn: !GetAtt EmbedQueue.Arn
-          DeadLetterConfig:
-            Arn: !GetAtt EventBridgeDLQ.Arn
-
-  EmbedQueuePolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      Queues:
-        - !Ref EmbedQueue
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sqs:SendMessage
-            Resource: !GetAtt EmbedQueue.Arn
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !GetAtt S3ToEmbedRule.Arn
-
-  # ── EventBridge: S3 parsed/ + delete-requests/ → DbLoadQueue ──
-  S3ToDbLoadRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: passroute-s3-to-db-load
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.s3
-        detail-type:
-          - "Object Created"
-        detail:
-          bucket:
-            name:
-              - !Ref CrawlerDataBucketName
-          object:
-            key:
-              - prefix: "parsed/"
-              - prefix: "delete-requests/"
-      Targets:
-        - Id: DbLoadQueueTarget
-          Arn: !GetAtt DbLoadQueue.Arn
-          DeadLetterConfig:
-            Arn: !GetAtt EventBridgeDLQ.Arn
-
-  DbLoadQueuePolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      Queues:
-        - !Ref DbLoadQueue
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sqs:SendMessage
-            Resource: !GetAtt DbLoadQueue.Arn
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !GetAtt S3ToDbLoadRule.Arn
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !GetAtt CompanyCollectQueue.Arn
 
 Outputs:
   # ── Queue URLs (Lambda 환경변수용) ──
@@ -228,6 +144,18 @@ Outputs:
     Value: !GetAtt SourceCollectQueue.QueueName
   EmbedQueueName:
     Value: !GetAtt EmbedQueue.QueueName
+  DbLoadQueueName:
+    Value: !GetAtt DbLoadQueue.QueueName
+  CompanyCollectQueueUrl:
+    Value: !Ref CompanyCollectQueue
+  CompanyCollectQueueArn:
+    Value: !GetAtt CompanyCollectQueue.Arn
+  CompanyCollectQueueName:
+    Value: !GetAtt CompanyCollectQueue.QueueName
+  CompanyCollectDLQArn:
+    Value: !GetAtt CompanyCollectDLQ.Arn
+  CompanyCollectDLQQueueName:
+    Value: !GetAtt CompanyCollectDLQ.QueueName
   # ── DLQ (모니터링용) ──
   JobDetailDLQArn:
     Value: !GetAtt JobDetailDLQ.Arn

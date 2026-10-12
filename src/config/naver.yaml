@@ -1,0 +1,48 @@
+# 네이버 API HUB 설정 (뉴스 + 웹문서)
+
+# ── API 엔드포인트 ──
+news_url: "https://naverapihub.apigw.ntruss.com/search/v1/news"
+webkr_url: "https://naverapihub.apigw.ntruss.com/search/v1/webkr"
+
+# ── 공통 ──
+timeout: 5                    # API 요청 타임아웃 (초)
+retry_total: 2                # 최대 재시도 횟수
+retry_backoff_factor: 0.5     # 재시도 간격 배수
+
+# ── 뉴스 수집 ──
+retention_days: 90
+api_delay: 0.1
+max_display: 100              # API 1회 최대 결과 수
+
+search_suffixes:
+  - 기술
+  - AI
+  - 개발
+
+exclude_news_title_keywords:
+  - 주가
+  - 주식
+  - 주주
+  - 배당
+  - 시세
+  - 종가
+  - 상한가
+  - 하한가
+  - 인사
+  - 승진
+  - 부고
+  - 소송
+  - 재판
+  - 기소
+  - 구속
+  - 부동산
+  - 아파트
+  - 분양
+  - 선거
+  - 후보
+  - 의원
+  - 국회
+  - 정당
+
+# ── 웹문서 검색 ──
+min_description_length: 30    # 필터링 최소 설명 길이

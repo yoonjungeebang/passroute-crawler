@@ -1,21 +1,11 @@
-"""점핏(Jumpit) 크롤러. JUMPIT_* 환경변수로 오버라이드 가능."""
+"""점핏(Jumpit) 크롤러."""
 import logging
-import os
 from datetime import datetime
 from typing import ClassVar
 
 from core import KST
-from crawler.base import (
-    DEFAULT_DELAY_MAX,
-    DEFAULT_DELAY_MIN,
-    DEFAULT_MAX_PAGES,
-    JobCrawler,
-    JobDetail,
-    JobListingRef,
-    make_crawler_session,
-)
-from crawler.validation import CrawlValidationError, require_keys, require_non_empty
-from parser.common import normalize_tech_name
+from crawler.base import JobCrawler, JobDetail, JobListingRef
+from crawler.validation import require_keys, require_non_empty
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +15,6 @@ _API_BASE = "https://api.jumpit.co.kr/api"
 class JumpitCrawler(JobCrawler):
     source: ClassVar[str] = "jumpit"
     base_url: ClassVar[str] = "https://www.jumpit.co.kr"
-
-    def __init__(self, **kwargs):
-        max_pages = int(os.environ.get("JUMPIT_MAX_PAGES", DEFAULT_MAX_PAGES))
-        delay_min = float(os.environ.get("JUMPIT_DELAY_MIN", DEFAULT_DELAY_MIN))
-        delay_max = float(os.environ.get("JUMPIT_DELAY_MAX", DEFAULT_DELAY_MAX))
-        super().__init__(max_pages=max_pages, delay_min=delay_min, delay_max=delay_max, **kwargs)
-
-        self.session = make_crawler_session()
 
     def fetch_listings_page(self, page: int) -> list[JobListingRef]:
         """점핏 채용공고 목록 API 호출."""
@@ -95,7 +77,7 @@ class JumpitCrawler(JobCrawler):
             parts.append(f"[주요업무]\n{responsibilities}")
 
         tech_stacks = result.get("techStacks") or []
-        normalized = tuple(normalize_tech_name(t) for t in tech_stacks if t)
+        normalized = tuple(t for t in tech_stacks if t)
 
         deadline_str = result.get("closedAt", "")
         deadline = self._parse_deadline(deadline_str)
@@ -112,23 +94,3 @@ class JumpitCrawler(JobCrawler):
             crawled_at=datetime.now(KST).isoformat(),
             career_level=ref.career_level,
         )
-
-    @staticmethod
-    def _parse_career(pos: dict) -> str:
-        min_career = pos.get("minCareer", 0)
-        max_career = pos.get("maxCareer", 0)
-        if min_career == 0 and max_career == 0:
-            return "신입"
-        if min_career == 0:
-            return f"신입~{max_career}년"
-        return f"{min_career}~{max_career}년"
-
-    @staticmethod
-    def _parse_deadline(deadline_str: str) -> int:
-        if not deadline_str:
-            return 0
-        try:
-            dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except (ValueError, TypeError):
-            return 0

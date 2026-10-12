@@ -62,6 +62,13 @@ def get_discord_monitor_webhook_url() -> str:
     return s["webhook_url"]
 
 
+def get_ws_api_key() -> str:
+    """WS_API_KEY_SECRET_ARN에서 WebSocket API 키 반환."""
+    arn = os.environ["WS_API_KEY_SECRET_ARN"]
+    s = get_secret(arn)
+    return s["ws_api_key"]
+
+
 def get_superookie_access_token() -> str:
     """SUPEROOKIE_API_SECRET_ARN에서 액세스 토큰 반환."""
     arn = os.environ["SUPEROOKIE_API_SECRET_ARN"]

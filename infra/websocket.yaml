@@ -1,0 +1,275 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  passroute-crawler WebSocket API (기업별 수집 실시간 알림)
+
+Parameters:
+  CompanyCollectQueueUrl:
+    Type: String
+  CompanyCollectQueueName:
+    Type: String
+  JwtSecretArn:
+    Type: String
+    NoEcho: true
+  WsApiKeySecretArn:
+    Type: String
+    Description: WebSocket API 키가 저장된 Secrets Manager ARN
+    NoEcho: true
+
+Resources:
+  # ── WebSocket API Gateway ──
+  CompanyWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: passroute-company-ws
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  # ── DynamoDB: WebSocket 연결 관리 ──
+  WebSocketConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: passroute-ws-connections
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: company
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: company-index
+          KeySchema:
+            - AttributeName: company
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ── DynamoDB: 수집 상태 관리 (중복 수집 방지) ──
+  # collectKey = "{company}#{params_hash}" 형태로, 같은 기업이라도
+  # 키워드 조합이 다르면 별도 수집을 실행한다.
+  CollectStatusTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: passroute-collect-status
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: collectKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: collectKey
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ── DynamoDB: 기업별 요청 횟수 (프리워밍 판단용) ──
+  CompanyRequestCountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: passroute-company-request-counts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: company
+          AttributeType: S
+      KeySchema:
+        - AttributeName: company
+          KeyType: HASH
+
+  # ── WebSocket Lambda 핸들러 ──
+  WsConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.ws_connect
+      Timeout: 10
+      MemorySize: 128
+
+  WsDisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.ws_disconnect
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          WS_CONNECTIONS_TABLE: !Ref WebSocketConnectionsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WebSocketConnectionsTable
+
+  WsCollectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.ws_collect
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          WS_CONNECTIONS_TABLE: !Ref WebSocketConnectionsTable
+          COLLECT_STATUS_TABLE: !Ref CollectStatusTable
+          COMPANY_REQUEST_COUNTS_TABLE: !Ref CompanyRequestCountsTable
+          COMPANY_COLLECT_QUEUE_URL: !Ref CompanyCollectQueueUrl
+          WS_API_ENDPOINT: !Sub "https://${CompanyWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WebSocketConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CollectStatusTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CompanyRequestCountsTable
+        - SQSSendMessagePolicy:
+            QueueName: !Ref CompanyCollectQueueName
+
+  # ── Lambda Authorizer ──
+  WsAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.ws_authorizer
+      Timeout: 5
+      MemorySize: 128
+      Environment:
+        Variables:
+          WS_API_KEY_SECRET_ARN: !Ref WsApiKeySecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref WsApiKeySecretArn
+
+  WsAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsAuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CompanyWebSocketApi}/*"
+
+  WsAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      Name: passroute-ws-api-key-auth
+      ApiId: !Ref CompanyWebSocketApi
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsAuthorizerFunction.Arn}/invocations"
+      IdentitySource: route.request.querystring.x-api-key
+
+  # ── WebSocket Routes ──
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      RouteKey: $connect
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref WsAuthorizer
+      Target: !Sub "integrations/${ConnectIntegration}"
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsConnectFunction.Arn}/invocations"
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${DisconnectIntegration}"
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsDisconnectFunction.Arn}/invocations"
+
+  CollectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      RouteKey: collect
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${CollectIntegration}"
+
+  CollectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsCollectFunction.Arn}/invocations"
+
+  # ── Lambda Invoke Permissions ──
+  ConnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsConnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CompanyWebSocketApi}/*"
+
+  DisconnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsDisconnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CompanyWebSocketApi}/*"
+
+  CollectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsCollectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CompanyWebSocketApi}/*"
+
+  # ── Deployment & Stage ──
+  WebSocketDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - CollectRoute
+      - WsAuthorizer
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref CompanyWebSocketApi
+      StageName: prod
+      DeploymentId: !Ref WebSocketDeployment
+
+Outputs:
+  WebSocketApiId:
+    Value: !Ref CompanyWebSocketApi
+  WebSocketEndpoint:
+    Value: !Sub "wss://${CompanyWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  WebSocketConnectionsTableName:
+    Value: !Ref WebSocketConnectionsTable
+  WebSocketConnectionsTableArn:
+    Value: !GetAtt WebSocketConnectionsTable.Arn
+  WebSocketApiArn:
+    Value: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CompanyWebSocketApi}/*"
+  CollectStatusTableName:
+    Value: !Ref CollectStatusTable
+  CollectStatusTableArn:
+    Value: !GetAtt CollectStatusTable.Arn
+  CompanyRequestCountsTableName:
+    Value: !Ref CompanyRequestCountsTable

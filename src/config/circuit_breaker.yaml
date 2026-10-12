@@ -1,0 +1,4 @@
+# 서킷 브레이커 설정
+
+failure_threshold: 5    # 서킷 OPEN까지 연속 실패 횟수
+recovery_timeout: 60.0  # OPEN → HALF_OPEN 전환 대기 (초)

@@ -1,0 +1,51 @@
+# 기술 블로그 설정
+# 도메인 → RSS 피드 URL 매핑에 사용된다.
+
+min_content_length: 100
+page_timeout: 15          # 페이지 크롤링 타임아웃 (초)
+
+# ── RSS/Atom 피드 매핑 ──
+
+feeds:
+  - company_name: 네이버
+    feed_url: "https://d2.naver.com/d2.atom"
+  - company_name: 카카오
+    feed_url: "https://tech.kakao.com/feed"
+  - company_name: 카카오페이
+    feed_url: "https://tech.kakaopay.com/rss.xml"
+  - company_name: 카카오뱅크
+    feed_url: "https://tech.kakaobank.com/index.xml"
+  - company_name: 토스
+    feed_url: "https://toss.tech/rss.xml"
+  - company_name: 우아한형제들
+    feed_url: "https://techblog.woowahan.com/feed"
+  - company_name: 당근
+    feed_url: "https://medium.com/feed/daangn"
+  - company_name: 쿠팡
+    feed_url: "https://medium.com/feed/coupang-engineering"
+  - company_name: 라인
+    feed_url: "https://techblog.lycorp.co.jp/ko/feed/index.xml"
+  - company_name: 삼성전자
+    feed_url: "https://techblog.samsung.com/rss"
+  - company_name: LG U+
+    feed_url: "https://techblog.uplus.co.kr/feed"
+  - company_name: KT Cloud
+    feed_url: "https://tech.ktcloud.com/feed"
+  - company_name: NHN
+    feed_url: "https://meetup.nhncloud.com/rss"
+  - company_name: 마켓컬리
+    feed_url: "https://helloworld.kurly.com/rss.xml"
+  - company_name: 올리브영
+    feed_url: "https://oliveyoung.tech/rss.xml"
+  - company_name: 무신사
+    feed_url: "https://medium.com/feed/musinsa-tech"
+  - company_name: 뱅크샐러드
+    feed_url: "https://blog.banksalad.com/rss.xml"
+  - company_name: 야놀자
+    feed_url: "https://medium.com/feed/yanoljacloud-tech"
+  - company_name: 쏘카
+    feed_url: "https://tech.socar.kr/feed.xml"
+  - company_name: 지마켓
+    feed_url: "https://dev.gmarket.com/rss"
+  - company_name: 11번가
+    feed_url: "https://11st-tech.github.io/rss/"

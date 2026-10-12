@@ -1,24 +1,15 @@
-"""슈퍼루키(Superookie) 크롤러. SUPEROOKIE_* 환경변수로 오버라이드 가능.
+"""슈퍼루키(Superookie) 크롤러.
 
 슈퍼루키는 공개 REST API 를 제공하며, Secrets Manager 에 저장된 토큰으로 인증한다.
 """
 import logging
-import os
 import re
 from datetime import datetime
 from typing import ClassVar
 
 from core import KST
-from crawler.validation import CrawlValidationError, require_keys
-from crawler.base import (
-    DEFAULT_DELAY_MAX,
-    DEFAULT_DELAY_MIN,
-    DEFAULT_MAX_PAGES,
-    JobCrawler,
-    JobDetail,
-    JobListingRef,
-    make_crawler_session,
-)
+from crawler.validation import require_keys
+from crawler.base import JobCrawler, JobDetail, JobListingRef
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +25,6 @@ def _get_access_token() -> str:
 class SuperookieCrawler(JobCrawler):
     source: ClassVar[str] = "superookie"
     base_url: ClassVar[str] = "https://www.superookie.com"
-
-    def __init__(self, **kwargs):
-        max_pages = int(os.environ.get("SUPEROOKIE_MAX_PAGES", DEFAULT_MAX_PAGES))
-        delay_min = float(os.environ.get("SUPEROOKIE_DELAY_MIN", DEFAULT_DELAY_MIN))
-        delay_max = float(os.environ.get("SUPEROOKIE_DELAY_MAX", DEFAULT_DELAY_MAX))
-        super().__init__(max_pages=max_pages, delay_min=delay_min, delay_max=delay_max, **kwargs)
-
-        self.session = make_crawler_session()
 
     def fetch_listings_page(self, page: int) -> list[JobListingRef]:
         """슈퍼루키 채용공고 목록 API 호출."""
@@ -141,11 +124,3 @@ class SuperookieCrawler(JobCrawler):
         if level_id is None:
             return ""
         return str(level_id)
-
-    @staticmethod
-    def _parse_deadline(date_str: str) -> int:
-        try:
-            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-            return int(dt.timestamp())
-        except (ValueError, TypeError):
-            return 0

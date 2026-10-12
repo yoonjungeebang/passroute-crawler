@@ -1,6 +1,6 @@
 """app.py 의 Lambda 핸들러에 대한 단위 테스트.
 
-외부 I/O(SQS, S3, 크롤러)는 전부 mock 으로 대체한다.
+외부 I/O(SQS, 크롤러)는 전부 mock 으로 대체한다.
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -59,19 +59,12 @@ def _detail(**overrides) -> JobDetail:
 # ─────────────────────────────────────────────────────────
 
 
-@patch("handlers.collect.iter_sources", return_value=iter(["jumpit", "programmers"]))
-@patch("handlers.collect.boto3.client")
-@patch("handlers._common.S3Storage")
-def test_job_list_collector_dispatches_sources(
-    mock_storage_cls, mock_boto_client, mock_iter,
-):
+@patch("handlers.job_dispatch.iter_sources", return_value=iter(["jumpit", "programmers"]))
+@patch("handlers.job_dispatch.boto3.client")
+def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
     """소스별로 SourceCollectQueue 에 메시지를 전송한다."""
     mock_sqs = MagicMock()
     mock_boto_client.return_value = mock_sqs
-
-    mock_storage = MagicMock()
-    mock_storage.delete_expired.return_value = True
-    mock_storage_cls.return_value = mock_storage
 
     result = app.job_list_collector({}, None)
 
@@ -79,37 +72,28 @@ def test_job_list_collector_dispatches_sources(
     assert body["dispatched_sources"] == ["jumpit", "programmers"]
     assert mock_sqs.send_message.call_count == 2
 
-    # 첫 번째 메시지 검증
-    first_call = mock_sqs.send_message.call_args_list[0]
-    msg = json.loads(first_call.kwargs["MessageBody"])
-    assert msg["source"] == "jumpit"
+
+@patch("handlers.cleanup.boto3.client")
+def test_delete_expired_jobs_sends_message(mock_boto_client):
+    """만료 삭제 메시지가 DbLoadQueue 로 전송되어야 한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
+
+    result = app.delete_expired_jobs({}, None)
+
+    mock_sqs.send_message.assert_called_once()
+    msg = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+    assert msg["type"] == "delete_expired"
+    assert "now_ts" in msg
+    assert result["statusCode"] == 200
 
 
-@patch("handlers.collect.iter_sources", return_value=iter(["jumpit"]))
-@patch("handlers.collect.boto3.client")
-@patch("handlers._common.S3Storage")
-def test_job_list_collector_calls_delete_expired(
-    mock_storage_cls, mock_boto_client, mock_iter,
-):
-    """목록 수집 전에 마감 공고 삭제가 한 번 호출되어야 한다."""
-    mock_boto_client.return_value = MagicMock()
-    mock_storage = MagicMock()
-    mock_storage.delete_expired.return_value = True
-    mock_storage_cls.return_value = mock_storage
-
-    app.job_list_collector({}, None)
-
-    mock_storage.delete_expired.assert_called_once()
-
-
-@patch("handlers.collect.boto3.client")
-@patch("handlers._common.S3Storage")
+@patch("handlers.job_dispatch.boto3.client")
 def test_job_list_collector_fails_fast_when_queue_url_missing(
-    mock_storage_cls, mock_boto_client, monkeypatch,
+    mock_boto_client, monkeypatch,
 ):
     """필수 환경변수 SOURCE_COLLECT_QUEUE_URL 이 없으면 RuntimeError."""
     mock_boto_client.return_value = MagicMock()
-    mock_storage_cls.return_value = MagicMock()
     monkeypatch.delenv("SOURCE_COLLECT_QUEUE_URL", raising=False)
 
     with pytest.raises(RuntimeError, match="SOURCE_COLLECT_QUEUE_URL"):
@@ -136,6 +120,7 @@ def test_source_collect_worker_dispatches_new_listings(
     mock_pg.get_existing_urls.return_value = {
         "https://www.jumpit.co.kr/position/111",
     }
+    mock_pg.get_existing_company_titles.return_value = set()
     mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
@@ -155,6 +140,43 @@ def test_source_collect_worker_dispatches_new_listings(
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["333"]
+
+
+@patch("crawler.robots_check.RobotsChecker", autospec=True)
+@patch("handlers.collect.boto3.client")
+@patch("handlers.collect.get_pg_storage")
+@patch("handlers.collect.get_crawler")
+def test_source_collect_worker_skips_title_duplicates(
+    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+):
+    """다른 source 에 동일 회사+제목 공고가 있으면 크롤링 전에 제외한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
+
+    mock_pg = MagicMock()
+    mock_pg.get_existing_urls.return_value = set()
+    mock_pg.get_existing_company_titles.return_value = {
+        ("a", "t1"),  # normalized company="A" → "a", title="t1"
+    }
+    mock_get_pg.return_value = mock_pg
+
+    mock_robots = MagicMock()
+    mock_robots.check_and_alert.return_value = True
+    mock_robots_cls.return_value = mock_robots
+
+    mock_crawler = MagicMock()
+    mock_crawler.base_url = "https://www.jumpit.co.kr"
+    mock_crawler.collect_listings.return_value = [
+        _ref("111", "A", "t1"),  # 제목 중복 → 제외
+        _ref("222", "B", "t2"),  # 신규 → 전송
+    ]
+    mock_get_crawler.return_value = mock_crawler
+
+    event = _make_sqs_event({"source": "jumpit"})
+    app.source_collect_worker(event, None)
+
+    sent = _collect_sent_messages(mock_sqs)
+    assert [m["external_id"] for m in sent] == ["222"]
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
@@ -217,12 +239,12 @@ def test_source_collect_worker_partial_failure(
 
 
 @patch("handlers.crawl.time.sleep")
-@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.boto3.client")
 @patch("handlers.crawl.get_crawler")
-def test_job_crawl_saves_raw(mock_get_crawler, mock_storage_cls, mock_sleep):
-    """상세 크롤링 성공 시 storage.save_raw 가 호출되어야 한다."""
-    mock_storage = MagicMock()
-    mock_storage_cls.return_value = mock_storage
+def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock_sleep):
+    """상세 크롤링 성공 시 SQS EmbedQueue 로 메시지가 전송되어야 한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
 
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.return_value = _detail()
@@ -237,21 +259,23 @@ def test_job_crawl_saves_raw(mock_get_crawler, mock_storage_cls, mock_sleep):
     })
     app.job_crawl(event, None)
 
-    mock_storage.save_raw.assert_called_once()
-    saved = mock_storage.save_raw.call_args.args[0]
-    assert isinstance(saved, JobDetail)
+    mock_sqs.send_message.assert_called_once()
+    sent_body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
+    assert sent_body["source"] == "jumpit"
+    assert sent_body["external_id"] == "999"
+    assert sent_body["tech_stack"] == ["Python", "AWS"]
     mock_sleep.assert_called_once()
 
 
 @patch("handlers.crawl.time.sleep")
-@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.boto3.client")
 @patch("handlers.crawl.get_crawler")
 def test_job_crawl_skips_when_fetch_returns_none(
-    mock_get_crawler, mock_storage_cls, mock_sleep,
+    mock_get_crawler, mock_boto_client, mock_sleep,
 ):
-    """fetch_detail 이 None 을 반환하면 저장하지 않고 스킵한다."""
-    mock_storage = MagicMock()
-    mock_storage_cls.return_value = mock_storage
+    """fetch_detail 이 None 을 반환하면 전송하지 않고 스킵한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
 
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.return_value = None
@@ -266,17 +290,17 @@ def test_job_crawl_skips_when_fetch_returns_none(
     })
     app.job_crawl(event, None)
 
-    mock_storage.save_raw.assert_not_called()
+    mock_sqs.send_message.assert_not_called()
 
 
 @patch("handlers.crawl.time.sleep")
-@patch("handlers._common.S3Storage")
+@patch("handlers.crawl.boto3.client")
 @patch("handlers.crawl.get_crawler")
 def test_job_crawl_reports_failure_in_batch_item_failures(
-    mock_get_crawler, mock_storage_cls, mock_sleep,
+    mock_get_crawler, mock_boto_client, mock_sleep,
 ):
     """크롤링 예외 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
-    mock_storage_cls.return_value = MagicMock()
+    mock_boto_client.return_value = MagicMock()
 
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.side_effect = RuntimeError("boom")
