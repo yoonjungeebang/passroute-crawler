@@ -37,6 +37,11 @@ Parameters:
     Description: JWT 서명 검증용 시크릿(Base64)이 저장된 Secrets Manager ARN
     NoEcho: true
     Default: ''
+  WsApiKeySecretArn:
+    Type: String
+    Description: WebSocket API 키가 저장된 Secrets Manager ARN
+    NoEcho: true
+    Default: ''
   CorsAllowOrigin:
     Type: String
     Description: API Gateway CORS 허용 오리진 (프론트엔드 도메인)
@@ -63,6 +68,29 @@ Resources:
     Properties:
       TemplateURL: messaging.yaml
 
+  # ── Stage 0: 만료 공고 삭제 (cron) ──
+  DeleteExpiredJobs:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.delete_expired_jobs
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 18 * * ? *)
+            Enabled: true
+
   # ── Stage 1: 목록 수집 디스패처 (cron → 소스별 SQS 메시지) ──
   JobListCollector:
     Type: AWS::Serverless::Function
@@ -76,12 +104,9 @@ Resources:
       Environment:
         Variables:
           SOURCE_COLLECT_QUEUE_URL: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
-          DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.SourceCollectQueueName
-        - SQSSendMessagePolicy:
-            QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
       Events:
         DailySchedule:
           Type: Schedule
@@ -97,7 +122,7 @@ Resources:
       CodeUri: ../src/
       Handler: app.source_collect_worker
       Timeout: 900
-      ReservedConcurrentExecutions: 3
+      ReservedConcurrentExecutions: 4
       MemorySize: 512
       VpcConfig:
         SubnetIds:
@@ -231,57 +256,27 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
 
-  # ── Phase 4: 검색 API (API Gateway) ──
-  SearchApi:
-    Type: AWS::Serverless::Function
-    Metadata:
-      DockerTag: search-api
-      DockerContext: ..
-      Dockerfile: src/Dockerfile
+  # ── WebSocket (Nested Stack) ──
+  WebSocketStack:
+    Type: AWS::CloudFormation::Stack
     Properties:
-      PackageType: Image
-      ImageConfig:
-        Command:
-          - app.search_api
-      Timeout: 30
-      MemorySize: 2048
-      ReservedConcurrentExecutions: 10
-      VpcConfig:
-        SubnetIds:
-          - !GetAtt VPCStack.Outputs.PrivateSubnetA
-          - !GetAtt VPCStack.Outputs.PrivateSubnetB
-        SecurityGroupIds:
-          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
-      Environment:
-        Variables:
-          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
-          NAVER_API_SECRET_ARN: !Ref NaverApiSecretArn
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action: secretsmanager:GetSecretValue
-              Resource:
-                - !Ref DatabaseSecretArn
-                - !Ref NaverApiSecretArn
-        - VPCAccessPolicy: {}
-      Events:
-        SearchGet:
-          Type: Api
-          Properties:
-            Path: /v1/search
-            Method: get
-            RestApiId: !Ref PassrouteApi
+      TemplateURL: websocket.yaml
+      Parameters:
+        CompanyCollectQueueUrl: !GetAtt MessagingStack.Outputs.CompanyCollectQueueUrl
+        CompanyCollectQueueName: !GetAtt MessagingStack.Outputs.CompanyCollectQueueName
+        JwtSecretArn: !Ref JwtSecretArn
+        WsApiKeySecretArn: !Ref WsApiKeySecretArn
 
-  # ── 기업별 실시간 수집 API (API Gateway) ──
-  CompanyCollector:
+  # ── 기업별 수집 워커 (SQS 트리거) ──
+  CompanyCollectWorker:
     Type: AWS::Serverless::Function
     Properties:
       Runtime: python3.11
       CodeUri: ../src/
-      Handler: app.company_collect
-      Timeout: 60
+      Handler: app.company_collect_worker
+      Timeout: 900
       MemorySize: 512
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: 15
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -292,6 +287,8 @@ Resources:
         Variables:
           DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
           NAVER_API_SECRET_ARN: !Ref NaverApiSecretArn
+          WS_CONNECTIONS_TABLE: !GetAtt WebSocketStack.Outputs.WebSocketConnectionsTableName
+          COLLECT_STATUS_TABLE: !GetAtt WebSocketStack.Outputs.CollectStatusTableName
       Policies:
         - Statement:
             - Effect: Allow
@@ -299,9 +296,51 @@ Resources:
               Resource:
                 - !Ref DatabaseSecretArn
                 - !Ref NaverApiSecretArn
+        - DynamoDBCrudPolicy:
+            TableName: !GetAtt WebSocketStack.Outputs.WebSocketConnectionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !GetAtt WebSocketStack.Outputs.CollectStatusTableName
+        - Statement:
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !GetAtt WebSocketStack.Outputs.WebSocketApiArn
         - VPCAccessPolicy: {}
       Events:
-        CollectGet:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessagingStack.Outputs.CompanyCollectQueueArn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  # ── 기업별 데이터 조회 API (API Gateway) ──
+  CompanyQuery:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.11
+      CodeUri: ../src/
+      Handler: app.company_query
+      Timeout: 10
+      MemorySize: 256
+      ReservedConcurrentExecutions: 200
+      VpcConfig:
+        SubnetIds:
+          - !GetAtt VPCStack.Outputs.PrivateSubnetA
+          - !GetAtt VPCStack.Outputs.PrivateSubnetB
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+      Environment:
+        Variables:
+          DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DatabaseSecretArn
+        - VPCAccessPolicy: {}
+      Events:
+        QueryGet:
           Type: Api
           Properties:
             Path: /v1/company-data
@@ -353,10 +392,11 @@ Resources:
         EmbedDLQQueueName: !GetAtt MessagingStack.Outputs.EmbedDLQQueueName
         DbLoadDLQArn: !GetAtt MessagingStack.Outputs.DbLoadDLQArn
         DbLoadDLQQueueName: !GetAtt MessagingStack.Outputs.DbLoadDLQQueueName
+        CompanyCollectDLQArn: !GetAtt MessagingStack.Outputs.CompanyCollectDLQArn
+        CompanyCollectDLQQueueName: !GetAtt MessagingStack.Outputs.CompanyCollectDLQQueueName
         # ── 성능 메트릭 알람용 ──
-        SearchApiFunctionName: !Ref SearchApi
         EmbedWorkerFunctionName: !Ref EmbedWorker
-        CompanyCollectorFunctionName: !Ref CompanyCollector
+        CompanyCollectorFunctionName: !Ref CompanyCollectWorker
         JobDetailQueueName: !GetAtt MessagingStack.Outputs.JobDetailQueueName
         EmbedQueueName: !GetAtt MessagingStack.Outputs.EmbedQueueName
 
@@ -388,15 +428,18 @@ Outputs:
   SourceCollectQueueUrl:
     Description: 소스별 수집 SQS Queue URL
     Value: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
-  SearchApiUrl:
-    Description: 검색 API 엔드포인트 URL
-    Value: !Sub "https://${PassrouteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/search"
-  CompanyCollectorArn:
-    Description: 기업별 실시간 수집 Lambda ARN
-    Value: !GetAtt CompanyCollector.Arn
+  CompanyCollectWorkerArn:
+    Description: 기업별 수집 워커 Lambda ARN
+    Value: !GetAtt CompanyCollectWorker.Arn
+  CompanyQueryArn:
+    Description: 기업별 조회 API Lambda ARN
+    Value: !GetAtt CompanyQuery.Arn
   CompanyDataApiUrl:
-    Description: 기업별 데이터 수집 API 엔드포인트 URL
+    Description: 기업별 데이터 조회 API 엔드포인트 URL
     Value: !Sub "https://${PassrouteApi}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/company-data"
+  WebSocketEndpoint:
+    Description: WebSocket 엔드포인트 URL
+    Value: !GetAtt WebSocketStack.Outputs.WebSocketEndpoint
   DLQAlarmTopicArn:
     Description: DLQ 알람 SNS 토픽 ARN
     Value: !GetAtt MonitoringStack.Outputs.DLQAlarmTopicArn

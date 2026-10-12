@@ -95,6 +95,29 @@ Resources:
         sourceQueueArns:
           - !GetAtt SourceCollectQueue.Arn
 
+  # ── SQS: 기업별 수집 큐 (WebSocket → company_collect_worker) ──
+  CompanyCollectQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: passroute-company-collect-queue
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CompanyCollectDLQ.Arn
+        maxReceiveCount: 3
+
+  CompanyCollectDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: passroute-company-collect-dlq
+      MessageRetentionPeriod: 604800
+      SqsManagedSseEnabled: true
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !GetAtt CompanyCollectQueue.Arn
+
 Outputs:
   # ── Queue URLs (Lambda 환경변수용) ──
   JobDetailQueueUrl:
@@ -123,6 +146,16 @@ Outputs:
     Value: !GetAtt EmbedQueue.QueueName
   DbLoadQueueName:
     Value: !GetAtt DbLoadQueue.QueueName
+  CompanyCollectQueueUrl:
+    Value: !Ref CompanyCollectQueue
+  CompanyCollectQueueArn:
+    Value: !GetAtt CompanyCollectQueue.Arn
+  CompanyCollectQueueName:
+    Value: !GetAtt CompanyCollectQueue.QueueName
+  CompanyCollectDLQArn:
+    Value: !GetAtt CompanyCollectDLQ.Arn
+  CompanyCollectDLQQueueName:
+    Value: !GetAtt CompanyCollectDLQ.QueueName
   # ── DLQ (모니터링용) ──
   JobDetailDLQArn:
     Value: !GetAtt JobDetailDLQ.Arn
