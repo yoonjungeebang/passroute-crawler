@@ -51,16 +51,18 @@ Resources:
         Enabled: true
 
   # ── DynamoDB: 수집 상태 관리 (중복 수집 방지) ──
+  # collectKey = "{company}#{params_hash}" 형태로, 같은 기업이라도
+  # 키워드 조합이 다르면 별도 수집을 실행한다.
   CollectStatusTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: passroute-collect-status
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: company
+        - AttributeName: collectKey
           AttributeType: S
       KeySchema:
-        - AttributeName: company
+        - AttributeName: collectKey
           KeyType: HASH
       TimeToLiveSpecification:
         AttributeName: ttl

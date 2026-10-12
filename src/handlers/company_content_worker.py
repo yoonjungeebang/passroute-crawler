@@ -46,6 +46,7 @@ def company_collect_worker(event, context):
             keywords_param = message.get("keywords", "")
             max_articles = message.get("max_articles", "10")
             mode = message.get("mode", "collect")
+            collect_key = message.get("collect_key", company)
 
             # 캐시 데이터가 있으면 즉시 푸시 (사용자 대기 시간 최소화)
             cached = _get_cached_data(company)
@@ -72,11 +73,14 @@ def company_collect_worker(event, context):
                 tech_stack_param=tech_stack_param,
                 keywords_param=keywords_param,
                 max_articles=max_articles,
+                push_callback=lambda item_type, item: _push_to_all_connections(
+                    company, {"news": [item] if item_type == "news" else [], "tech_articles": [item] if item_type == "blog" else []}, status="partial",
+                ),
             )
 
-            _update_collect_status(company, "done")
+            _update_collect_status(collect_key, "done")
 
-            # company GSI로 해당 기업을 요청한 전체 연결에 푸시
+            # company GSI로 해당 기업을 요청한 전체 연결에 최종 결과 푸시
             _push_to_all_connections(company, result, status="done")
 
             logger.info("수집 완료: company=%s, 뉴스 %d건, 블로그 %d건",
@@ -98,6 +102,7 @@ def _collect_company_data(
     tech_stack_param: str,
     keywords_param: str,
     max_articles: str,
+    push_callback=None,
 ) -> dict:
     """기업 데이터를 수집하고 DB에 저장한다. 결과 dict를 반환."""
     from naver.news import (  # noqa: C0415
@@ -158,12 +163,15 @@ def _collect_company_data(
             career_level=data.get("career_level", ""),
         )
         news_batch.append((detail, None, "ok"))
-        news_saved.append({
+        news_item = {
             "title": item.title,
             "url": item.url,
             "company_name": item.company_name,
             "description": item.description,
-        })
+        }
+        news_saved.append(news_item)
+        if push_callback:
+            push_callback("news", news_item)
 
     # ── 2. 기술 블로그 수집 ──
     keyword_list = [kw.strip()[:50] for kw in keywords_param.split(",") if kw.strip()][:_MAX_KEYWORDS]
@@ -224,12 +232,15 @@ def _collect_company_data(
         if not content:
             continue
 
-        tech_articles.append({
+        blog_item = {
             "title": item["title"],
             "url": url,
             "content": content,
             "source": "tech_blog_webkr",
-        })
+        }
+        tech_articles.append(blog_item)
+        if push_callback:
+            push_callback("blog", blog_item)
 
         detail = JobDetail(
             source="tech_blog_webkr",
@@ -253,7 +264,7 @@ def _collect_company_data(
     }
 
 
-def _update_collect_status(company: str, status: str) -> None:
+def _update_collect_status(collect_key: str, status: str) -> None:
     """수집 상태를 DynamoDB에 업데이트한다."""
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(_COLLECT_STATUS_TABLE)
@@ -261,7 +272,7 @@ def _update_collect_status(company: str, status: str) -> None:
     cooldown = int(_API_CONFIG.get("collect_cooldown", 300))
     try:
         table.put_item(Item={
-            "company": company,
+            "collectKey": collect_key,
             "status": status,
             "updatedAt": now,
             "ttl": now + cooldown + 60,

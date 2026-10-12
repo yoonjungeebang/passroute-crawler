@@ -1,4 +1,5 @@
 """WebSocket 핸들러: 기업별 수집 요청 접수 + 연결 관리."""
+import hashlib
 import json
 import logging
 import os
@@ -129,8 +130,11 @@ def ws_collect(event, context):
     # 기업별 요청 횟수 기록 (향후 프리워밍 판단용)
     _increment_request_count(company)
 
+    # 같은 기업이라도 키워드 조합이 다르면 별도 수집 실행
+    collect_key = _make_collect_key(company, position, tech_stack, keywords)
+
     # 원자적 중복 수집 방지: ConditionExpression으로 race condition 해결
-    need_collect = _try_claim_collect(dynamodb, company, now)
+    need_collect = _try_claim_collect(dynamodb, collect_key, now)
     mode = "collect" if need_collect else "cache_only"
 
     # SQS에 요청 적재 (워커가 캐시 반환 또는 실시간 수집 수행)
@@ -145,6 +149,7 @@ def ws_collect(event, context):
                 "keywords": keywords,
                 "max_articles": max_articles,
                 "mode": mode,
+                "collect_key": collect_key,
             }, ensure_ascii=False),
         )
     except Exception:
@@ -157,7 +162,7 @@ def ws_collect(event, context):
     return {"statusCode": 200}
 
 
-def _try_claim_collect(dynamodb, company: str, now: int) -> bool:
+def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
     """원자적으로 수집 권한을 획득한다. 성공하면 True, 이미 수집 중이면 False.
 
     DynamoDB ConditionExpression을 사용해 race condition을 방지한다.
@@ -171,13 +176,13 @@ def _try_claim_collect(dynamodb, company: str, now: int) -> bool:
     try:
         table.put_item(
             Item={
-                "company": company,
+                "collectKey": collect_key,
                 "status": "collecting",
                 "updatedAt": now,
                 "ttl": now + _COLLECT_COOLDOWN + 60,
             },
             ConditionExpression=(
-                Attr("company").not_exists()
+                Attr("collectKey").not_exists()
                 | Attr("updatedAt").lt(cutoff)
             ),
         )
@@ -201,6 +206,20 @@ def _send_to_client(endpoint: str, connection_id: str, data: dict) -> None:
         logger.info("연결 이미 끊어짐: %s", connection_id)
     except Exception:
         logger.exception("WebSocket 전송 실패: %s", connection_id)
+
+
+def _make_collect_key(company: str, position: str, tech_stack: str, keywords: str) -> str:
+    """company + 검색 파라미터로 쿨다운 키를 생성한다.
+
+    같은 기업이라도 키워드 조합이 다르면 별도 수집을 실행하기 위해
+    파라미터를 정규화한 뒤 해시를 붙인다.
+    """
+    parts = sorted(filter(None, [position.lower(), tech_stack.lower(), keywords.lower()]))
+    params_str = "|".join(parts)
+    if not params_str:
+        return company
+    params_hash = hashlib.sha256(params_str.encode()).hexdigest()[:8]
+    return f"{company}#{params_hash}"
 
 
 def _increment_request_count(company: str) -> None:
