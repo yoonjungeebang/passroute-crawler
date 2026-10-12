@@ -35,10 +35,11 @@ def _parsed_json_data(**overrides) -> dict:
     return base
 
 
-@patch("handlers.load.get_pg_storage")
+@patch("handlers.job_load.get_pg_storage")
 def test_db_loader_saves_record(mock_get_pg):
     """load 타입 메시지 시 PgVectorStorage.save() 가 호출된다."""
     mock_pg = MagicMock()
+    mock_pg.find_duplicate.return_value = None
     mock_get_pg.return_value = mock_pg
     data = _parsed_json_data()
 
@@ -52,7 +53,7 @@ def test_db_loader_saves_record(mock_get_pg):
     assert mock_pg.save.call_args.kwargs["embedding"] == [0.1] * 768
 
 
-@patch("handlers.load.get_pg_storage")
+@patch("handlers.job_load.get_pg_storage")
 def test_db_loader_processes_delete_expired(mock_get_pg):
     """delete_expired 타입 메시지 시 PgVectorStorage.delete_expired() 가 호출된다."""
     mock_pg = MagicMock()
@@ -70,10 +71,11 @@ def test_db_loader_processes_delete_expired(mock_get_pg):
     mock_pg.delete_expired.assert_called_once_with(1776164400)
 
 
-@patch("handlers.load.get_pg_storage")
+@patch("handlers.job_load.get_pg_storage")
 def test_db_loader_reports_failure_in_batch_item_failures(mock_get_pg):
     """에러 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
     mock_pg = MagicMock()
+    mock_pg.find_duplicate.return_value = None
     mock_pg.save.side_effect = RuntimeError("DB 접근 실패")
     mock_get_pg.return_value = mock_pg
 
@@ -85,7 +87,7 @@ def test_db_loader_reports_failure_in_batch_item_failures(mock_get_pg):
     assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
 
 
-@patch("handlers.load.get_pg_storage")
+@patch("handlers.job_load.get_pg_storage")
 def test_db_loader_handles_unknown_type(mock_get_pg):
     """알 수 없는 타입의 메시지는 무시한다."""
     mock_pg = MagicMock()
@@ -100,10 +102,11 @@ def test_db_loader_handles_unknown_type(mock_get_pg):
     mock_pg.delete_expired.assert_not_called()
 
 
-@patch("handlers.load.get_pg_storage")
+@patch("handlers.job_load.get_pg_storage")
 def test_db_loader_defaults_to_load_type(mock_get_pg):
     """type 필드가 없으면 load 로 간주한다."""
     mock_pg = MagicMock()
+    mock_pg.find_duplicate.return_value = None
     mock_get_pg.return_value = mock_pg
 
     data = _parsed_json_data()
@@ -111,4 +114,36 @@ def test_db_loader_defaults_to_load_type(mock_get_pg):
     event = _make_sqs_event(data)
     app.db_loader(event, None)
 
+    mock_pg.save.assert_called_once()
+
+
+@patch("handlers.job_load.get_pg_storage")
+def test_db_loader_skips_duplicate(mock_get_pg):
+    """중복 감지 시 save() 를 호출하지 않는다."""
+    mock_pg = MagicMock()
+    mock_pg.find_duplicate.return_value = {
+        "url": "https://other-site.com/job/999",
+        "source": "programmers",
+        "distance": 0.02,
+    }
+    mock_get_pg.return_value = mock_pg
+
+    data = _parsed_json_data()
+    event = _make_sqs_event(data)
+    app.db_loader(event, None)
+
+    mock_pg.save.assert_not_called()
+
+
+@patch("handlers.job_load.get_pg_storage")
+def test_db_loader_saves_when_no_embedding(mock_get_pg):
+    """임베딩이 없으면 중복 체크를 건너뛰고 저장한다."""
+    mock_pg = MagicMock()
+    mock_get_pg.return_value = mock_pg
+
+    data = _parsed_json_data(embedding=None, embedding_status="failed")
+    event = _make_sqs_event(data)
+    app.db_loader(event, None)
+
+    mock_pg.find_duplicate.assert_not_called()
     mock_pg.save.assert_called_once()

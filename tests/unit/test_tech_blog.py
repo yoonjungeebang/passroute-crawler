@@ -1,12 +1,11 @@
 """tech_blog 수집 모듈 단위 테스트."""
 from unittest.mock import MagicMock
 
-from collector.tech_blog import (
+from naver.tech_blog import (
     _extract_rss_content,
     find_rss_feed_url,
 )
-from parser.common import make_external_id
-from parser.common import strip_html
+from core.normalize import make_external_id, strip_html
 
 
 # ─────────────────────────────────────────────────────────

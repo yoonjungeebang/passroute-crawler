@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from collector.naver_news import (
+from naver.news import (
     NaverNewsCollector,
     NewsItem,
     _deadline_from_pub_date,
@@ -18,8 +18,7 @@ from collector.naver_news import (
     _parse_pub_date,
     news_item_to_detail_dict,
 )
-from parser.common import make_external_id
-from parser.common import strip_html
+from core.normalize import make_external_id, strip_html
 
 KST = timezone(timedelta(hours=9))
 

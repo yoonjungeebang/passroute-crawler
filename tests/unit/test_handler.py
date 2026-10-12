@@ -59,8 +59,8 @@ def _detail(**overrides) -> JobDetail:
 # ─────────────────────────────────────────────────────────
 
 
-@patch("handlers.collect.iter_sources", return_value=iter(["jumpit", "programmers"]))
-@patch("handlers.collect.boto3.client")
+@patch("handlers.job_dispatch.iter_sources", return_value=iter(["jumpit", "programmers"]))
+@patch("handlers.job_dispatch.boto3.client")
 def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
     """소스별로 SourceCollectQueue 에 메시지를 전송한다."""
     mock_sqs = MagicMock()
@@ -70,26 +70,25 @@ def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
 
     body = json.loads(result["body"])
     assert body["dispatched_sources"] == ["jumpit", "programmers"]
-    # delete_expired 1건 + 소스 2건 = 3건
-    assert mock_sqs.send_message.call_count == 3
+    assert mock_sqs.send_message.call_count == 2
 
 
-@patch("handlers.collect.iter_sources", return_value=iter(["jumpit"]))
-@patch("handlers.collect.boto3.client")
-def test_job_list_collector_sends_delete_expired(mock_boto_client, mock_iter):
-    """목록 수집 전에 만료 삭제 메시지가 DbLoadQueue 로 전송되어야 한다."""
+@patch("handlers.cleanup.boto3.client")
+def test_delete_expired_jobs_sends_message(mock_boto_client):
+    """만료 삭제 메시지가 DbLoadQueue 로 전송되어야 한다."""
     mock_sqs = MagicMock()
     mock_boto_client.return_value = mock_sqs
 
-    app.job_list_collector({}, None)
+    result = app.delete_expired_jobs({}, None)
 
-    first_call = mock_sqs.send_message.call_args_list[0]
-    msg = json.loads(first_call.kwargs["MessageBody"])
+    mock_sqs.send_message.assert_called_once()
+    msg = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
     assert msg["type"] == "delete_expired"
     assert "now_ts" in msg
+    assert result["statusCode"] == 200
 
 
-@patch("handlers.collect.boto3.client")
+@patch("handlers.job_dispatch.boto3.client")
 def test_job_list_collector_fails_fast_when_queue_url_missing(
     mock_boto_client, monkeypatch,
 ):
@@ -121,6 +120,7 @@ def test_source_collect_worker_dispatches_new_listings(
     mock_pg.get_existing_urls.return_value = {
         "https://www.jumpit.co.kr/position/111",
     }
+    mock_pg.get_existing_company_titles.return_value = set()
     mock_get_pg.return_value = mock_pg
 
     mock_robots = MagicMock()
@@ -140,6 +140,43 @@ def test_source_collect_worker_dispatches_new_listings(
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["333"]
+
+
+@patch("crawler.robots_check.RobotsChecker", autospec=True)
+@patch("handlers.collect.boto3.client")
+@patch("handlers.collect.get_pg_storage")
+@patch("handlers.collect.get_crawler")
+def test_source_collect_worker_skips_title_duplicates(
+    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+):
+    """다른 source 에 동일 회사+제목 공고가 있으면 크롤링 전에 제외한다."""
+    mock_sqs = MagicMock()
+    mock_boto_client.return_value = mock_sqs
+
+    mock_pg = MagicMock()
+    mock_pg.get_existing_urls.return_value = set()
+    mock_pg.get_existing_company_titles.return_value = {
+        ("a", "t1"),  # normalized company="A" → "a", title="t1"
+    }
+    mock_get_pg.return_value = mock_pg
+
+    mock_robots = MagicMock()
+    mock_robots.check_and_alert.return_value = True
+    mock_robots_cls.return_value = mock_robots
+
+    mock_crawler = MagicMock()
+    mock_crawler.base_url = "https://www.jumpit.co.kr"
+    mock_crawler.collect_listings.return_value = [
+        _ref("111", "A", "t1"),  # 제목 중복 → 제외
+        _ref("222", "B", "t2"),  # 신규 → 전송
+    ]
+    mock_get_crawler.return_value = mock_crawler
+
+    event = _make_sqs_event({"source": "jumpit"})
+    app.source_collect_worker(event, None)
+
+    sent = _collect_sent_messages(mock_sqs)
+    assert [m["external_id"] for m in sent] == ["222"]
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
