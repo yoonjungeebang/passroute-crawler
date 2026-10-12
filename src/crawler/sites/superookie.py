@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from core import KST
-from crawler.validation import CrawlValidationError, require_keys
+from crawler.validation import require_keys
 from crawler.base import JobCrawler, JobDetail, JobListingRef
 
 logger = logging.getLogger(__name__)
@@ -17,11 +17,7 @@ _API_BASE = "https://www.superookie.com/api"
 
 
 def _get_access_token() -> str:
-    """Secrets Manager 에서 슈퍼루키 API 액세스 토큰을 가져온다.
-
-    AWS Secrets Manager: 비밀번호, API 키 등 민감한 정보를 안전하게 저장/관리하는 서비스.
-    코드에 직접 적지 않고 Secrets Manager에서 런타임에 가져온다.
-    """
+    """Secrets Manager 에서 슈퍼루키 API 액세스 토큰을 가져온다."""
     from core.secrets import get_superookie_access_token  # noqa: C0415
     return get_superookie_access_token()
 
@@ -89,18 +85,13 @@ class SuperookieCrawler(JobCrawler):
 
         custom_field = job.get("custom_field", "")
         if custom_field:
-            # re.sub(패턴, 대체문자, 대상문자열): 정규식 치환.
-            # r"<[^>]+>": HTML 태그를 공백으로 교체
             cleaned = re.sub(r"<[^>]+>", " ", custom_field).strip()
-            # r"\s+": 연속된 공백(스페이스, 탭, 줄바꿈 등)을 하나의 공백으로 축소
             cleaned = re.sub(r"\s+", " ", cleaned)
             if cleaned:
                 parts.append(cleaned)
 
         steps = job.get("steps", [])
         if steps:
-            # " → ".join(제너레이터): 각 채용 절차 이름을 화살표로 연결
-            # 예: "서류 → 코딩테스트 → 면접"
             step_text = " → ".join(s.get("name", str(s)) if isinstance(s, dict) else str(s) for s in steps)
             parts.append(f"[채용절차] {step_text}")
 

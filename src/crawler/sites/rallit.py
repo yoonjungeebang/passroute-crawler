@@ -5,8 +5,7 @@ from typing import ClassVar
 
 from core import KST
 from crawler.base import JobCrawler, JobDetail, JobListingRef
-from crawler.validation import CrawlValidationError, require_keys, require_non_empty
-from parser.common import normalize_tech_name
+from crawler.validation import require_keys, require_non_empty
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class RallitCrawler(JobCrawler):
             parts.append(f"[우대사항]\n{preferred}")
 
         tech_stacks = job.get("skills") or job.get("techStacks") or []
-        normalized = tuple(normalize_tech_name(t.get("name", t) if isinstance(t, dict) else t) for t in tech_stacks if t)
+        normalized = tuple(t.get("name", t) if isinstance(t, dict) else t for t in tech_stacks if t)
 
         deadline_str = job.get("closedAt", job.get("endAt", ""))
         deadline = self._parse_deadline(deadline_str)

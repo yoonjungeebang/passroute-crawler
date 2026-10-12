@@ -5,8 +5,7 @@ from typing import ClassVar
 
 from core import KST
 from crawler.base import JobCrawler, JobDetail, JobListingRef
-from crawler.validation import CrawlValidationError, require_keys, require_non_empty
-from parser.common import normalize_tech_name
+from crawler.validation import require_keys, require_non_empty
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +76,8 @@ class ProgrammersCrawler(JobCrawler):
             parts.append(f"[우대사항]\n{preferred}")
 
         tech_stacks = job.get("technicalTags") or []
-        # isinstance(t, dict): t가 딕셔너리 타입인지 확인.
-        # API 응답이 {"name": "Python"} 일 수도, "Python" 일 수도 있어서 둘 다 처리.
-        # 삼항 표현식: t.get("name", t) if isinstance(t, dict) else t
-        #   → dict이면 name 키를 꺼내고, 아니면 그 값 자체를 사용.
-        normalized = tuple(normalize_tech_name(t.get("name", t) if isinstance(t, dict) else t) for t in tech_stacks if t)
+        # API 응답이 {"name": "Python"} 또는 "Python" 형태일 수 있음
+        normalized = tuple(t.get("name", t) if isinstance(t, dict) else t for t in tech_stacks if t)
 
         deadline_str = job.get("endAt", "")
         deadline = self._parse_deadline(deadline_str)
@@ -100,4 +96,3 @@ class ProgrammersCrawler(JobCrawler):
             crawled_at=datetime.now(KST).isoformat(),
             career_level=ref.career_level,
         )
-
