@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - Dockerfile.base
+      - "docs/**"
+      - "**.md"
+      - ".claude/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install flake8 pytest
+          pip install -r src/requirements.txt
+
+      - name: Lint
+        run: flake8 src/ tests/
+
+      - name: Unit tests
+        run: pytest tests/unit/ -v
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: aws-actions/setup-sam@v2
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: SAM validate
+        run: |
+          for f in infra/*.yaml; do
+            echo "Validating $f"
+            sam validate --lint --template-file "$f"
+          done
+
+      - name: SAM build
+        run: sam build
+
+      - name: SAM deploy
+        run: |
+          sam deploy \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              BaseImageUri=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ secrets.BASE_IMAGE_TAG }} \
+              DatabaseSecretArn=${{ secrets.DATABASE_SECRET_ARN }} \
+              NaverApiSecretArn=${{ secrets.NAVER_API_SECRET_ARN }} \
+              DiscordWebhookSecretArn=${{ secrets.DISCORD_WEBHOOK_SECRET_ARN }} \
+              DiscordMonitorWebhookSecretArn=${{ secrets.DISCORD_MONITOR_WEBHOOK_SECRET_ARN }} \
+              JwtSecretArn=${{ secrets.JWT_SECRET_ARN }} \
+              WsApiKeySecretArn=${{ secrets.WS_API_KEY_SECRET_ARN }}
