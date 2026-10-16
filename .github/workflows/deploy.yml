@@ -54,6 +54,8 @@ jobs:
           role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - uses: aws-actions/amazon-ecr-login@v2
+
       - name: SAM validate
         run: |
           for f in infra/*.yaml; do
