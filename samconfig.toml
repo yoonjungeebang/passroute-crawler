@@ -17,6 +17,7 @@ lint = true
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 resolve_s3 = true
+region = "ap-northeast-2"
 
 [default.package.parameters]
 resolve_s3 = true

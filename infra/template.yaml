@@ -17,11 +17,6 @@ Parameters:
     Type: String
     Description: 네이버 API 크레덴셜이 저장된 Secrets Manager ARN
     NoEcho: true
-  SuperookieApiSecretArn:
-    Type: String
-    Description: 슈퍼루키 API 액세스 토큰이 저장된 Secrets Manager ARN
-    NoEcho: true
-    Default: ''
   DiscordWebhookSecretArn:
     Type: String
     Description: Discord 웹훅 URL이 저장된 Secrets Manager ARN (#dlq 채널)
@@ -56,6 +51,17 @@ Globals:
       LogRetentionInDays: 30
 
 Resources:
+  # ── 공유 의존성 Layer ──
+  SharedDepsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: passroute-shared-deps
+      ContentUri: ../layers/shared/
+      CompatibleRuntimes:
+        - python3.11
+    Metadata:
+      BuildMethod: python3.11
+
   # ── VPC (Nested Stack) ──
   VPCStack:
     Type: AWS::CloudFormation::Stack
@@ -78,6 +84,8 @@ Resources:
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
@@ -101,6 +109,8 @@ Resources:
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           SOURCE_COLLECT_QUEUE_URL: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
@@ -124,6 +134,8 @@ Resources:
       Timeout: 900
       ReservedConcurrentExecutions: 4
       MemorySize: 512
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -135,7 +147,6 @@ Resources:
           JOB_DETAIL_QUEUE_URL: !GetAtt MessagingStack.Outputs.JobDetailQueueUrl
           DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
           DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
-          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.JobDetailQueueName
@@ -145,7 +156,6 @@ Resources:
               Resource:
                 - !Ref DatabaseSecretArn
                 - !Ref DiscordMonitorWebhookSecretArn
-                - !Ref SuperookieApiSecretArn
         - VPCAccessPolicy: {}
       Events:
         SQSTrigger:
@@ -166,10 +176,11 @@ Resources:
       Timeout: 120
       MemorySize: 512
       ReservedConcurrentExecutions: 5
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           EMBED_QUEUE_URL: !GetAtt MessagingStack.Outputs.EmbedQueueUrl
-          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
           DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
       Policies:
         - SQSSendMessagePolicy:
@@ -178,7 +189,6 @@ Resources:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource:
-                - !Ref SuperookieApiSecretArn
                 - !Ref DiscordMonitorWebhookSecretArn
       Events:
         SQSTrigger:
@@ -232,6 +242,8 @@ Resources:
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 5
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -277,6 +289,8 @@ Resources:
       Timeout: 900
       MemorySize: 512
       ReservedConcurrentExecutions: 15
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -324,6 +338,8 @@ Resources:
       Timeout: 10
       MemorySize: 256
       ReservedConcurrentExecutions: 200
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -356,6 +372,8 @@ Resources:
       Handler: authorizer.handler
       Timeout: 10
       MemorySize: 128
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           JWT_SECRET: !Sub '{{resolve:secretsmanager:${JwtSecretArn}:SecretString:jwt_secret}}'
