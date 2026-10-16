@@ -21,22 +21,18 @@ Parameters:
     Type: String
     Description: Discord 웹훅 URL이 저장된 Secrets Manager ARN (#dlq 채널)
     NoEcho: true
-    Default: ''
   DiscordMonitorWebhookSecretArn:
     Type: String
     Description: Discord #monitor 채널 웹훅 URL이 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   JwtSecretArn:
     Type: String
     Description: JWT 서명 검증용 시크릿(Base64)이 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   WsApiKeySecretArn:
     Type: String
     Description: WebSocket API 키가 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   CorsAllowOrigin:
     Type: String
     Description: API Gateway CORS 허용 오리진 (프론트엔드 도메인)
@@ -48,7 +44,6 @@ Globals:
     Timeout: 300
     LoggingConfig:
       LogFormat: JSON
-      LogRetentionInDays: 30
 
 Resources:
   # ── 공유 의존성 Layer ──
@@ -58,9 +53,9 @@ Resources:
       LayerName: passroute-shared-deps
       ContentUri: ../layers/shared/
       CompatibleRuntimes:
-        - python3.11
+        - python3.12
     Metadata:
-      BuildMethod: python3.11
+      BuildMethod: python3.12
 
   # ── VPC (Nested Stack) ──
   VPCStack:
@@ -78,7 +73,7 @@ Resources:
   DeleteExpiredJobs:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.delete_expired_jobs
       Timeout: 60
@@ -103,7 +98,7 @@ Resources:
   JobListCollector:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.job_list_collector
       Timeout: 60
@@ -128,7 +123,7 @@ Resources:
   SourceCollectWorker:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.source_collect_worker
       Timeout: 900
@@ -170,7 +165,7 @@ Resources:
   JobCrawler:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.job_crawl
       Timeout: 120
@@ -226,7 +221,7 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
     Metadata:
-      DockerTag: python3.11
+      DockerTag: python3.12
       DockerContext: ..
       Dockerfile: src/Dockerfile
       DockerBuildArgs:
@@ -236,7 +231,7 @@ Resources:
   DbLoader:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.db_loader
       Timeout: 60
@@ -283,7 +278,7 @@ Resources:
   CompanyCollectWorker:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.company_collect_worker
       Timeout: 900
@@ -332,7 +327,7 @@ Resources:
   CompanyQuery:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.company_query
       Timeout: 10
@@ -367,7 +362,7 @@ Resources:
   JwtAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: authorizer.handler
       Timeout: 10
