@@ -97,5 +97,4 @@ jobs:
               NaverApiSecretArn=${{ secrets.NAVER_API_SECRET_ARN }} \
               DiscordWebhookSecretArn=${{ secrets.DISCORD_WEBHOOK_SECRET_ARN }} \
               DiscordMonitorWebhookSecretArn=${{ secrets.DISCORD_MONITOR_WEBHOOK_SECRET_ARN }} \
-              JwtSecretArn=${{ secrets.JWT_SECRET_ARN }} \
               WsApiKeySecretArn=${{ secrets.WS_API_KEY_SECRET_ARN }}

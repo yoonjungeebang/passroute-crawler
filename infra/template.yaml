@@ -25,10 +25,6 @@ Parameters:
     Type: String
     Description: Discord #monitor 채널 웹훅 URL이 저장된 Secrets Manager ARN
     NoEcho: true
-  JwtSecretArn:
-    Type: String
-    Description: JWT 서명 검증용 시크릿(Base64)이 저장된 Secrets Manager ARN
-    NoEcho: true
   WsApiKeySecretArn:
     Type: String
     Description: WebSocket API 키가 저장된 Secrets Manager ARN
@@ -271,7 +267,6 @@ Resources:
       Parameters:
         CompanyCollectQueueUrl: !GetAtt MessagingStack.Outputs.CompanyCollectQueueUrl
         CompanyCollectQueueName: !GetAtt MessagingStack.Outputs.CompanyCollectQueueName
-        JwtSecretArn: !Ref JwtSecretArn
         WsApiKeySecretArn: !Ref WsApiKeySecretArn
 
   # ── 기업별 수집 워커 (SQS 트리거) ──
@@ -358,21 +353,6 @@ Resources:
             Method: get
             RestApiId: !Ref PassrouteApi
 
-  # ── JWT Lambda Authorizer ──
-  JwtAuthorizer:
-    Type: AWS::Serverless::Function
-    Properties:
-      Runtime: python3.12
-      CodeUri: ../src/
-      Handler: authorizer.handler
-      Timeout: 10
-      MemorySize: 128
-      Layers:
-        - !Ref SharedDepsLayer
-      Environment:
-        Variables:
-          JWT_SECRET: !Sub '{{resolve:secretsmanager:${JwtSecretArn}:SecretString:jwt_secret}}'
-
   PassrouteApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -381,14 +361,6 @@ Resources:
         AllowMethods: "'GET,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: !Ref CorsAllowOrigin
-      Auth:
-        DefaultAuthorizer: JwtLambdaAuthorizer
-        Authorizers:
-          JwtLambdaAuthorizer:
-            FunctionArn: !GetAtt JwtAuthorizer.Arn
-            Identity:
-              Header: Authorization
-              ReauthorizeEvery: 300
 
   # ── 모니터링 (Nested Stack) ──
   MonitoringStack:

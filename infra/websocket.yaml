@@ -8,9 +8,6 @@ Parameters:
     Type: String
   CompanyCollectQueueName:
     Type: String
-  JwtSecretArn:
-    Type: String
-    NoEcho: true
   WsApiKeySecretArn:
     Type: String
     Description: WebSocket API 키가 저장된 Secrets Manager ARN
