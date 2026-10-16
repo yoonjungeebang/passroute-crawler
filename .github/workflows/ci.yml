@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install flake8 pytest
-          pip install -r src/requirements.txt
+          pip install -r layers/shared/requirements.txt
 
       - name: Lint
         run: flake8 src/ tests/
