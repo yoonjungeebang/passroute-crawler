@@ -73,6 +73,7 @@ jobs:
           sam deploy \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --resolve-image-repos \
             --parameter-overrides \
               BaseImageUri=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ secrets.BASE_IMAGE_TAG }} \
               DatabaseSecretArn=${{ secrets.DATABASE_SECRET_ARN }} \
