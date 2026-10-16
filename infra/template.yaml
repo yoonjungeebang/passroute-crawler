@@ -367,6 +367,8 @@ Resources:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: monitoring.yaml
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
       Parameters:
         DiscordWebhookSecretArn: !Ref DiscordWebhookSecretArn
         JobDetailDLQArn: !GetAtt MessagingStack.Outputs.JobDetailDLQArn
