@@ -27,10 +27,6 @@ Resources:
       QueueName: passroute-job-detail-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-      RedriveAllowPolicy:
-        redrivePermission: byQueue
-        sourceQueueArns:
-          - !GetAtt JobDetailQueue.Arn
 
   # ── SQS: 임베딩 큐 (job_crawl → embed_worker) ──
   EmbedQueue:
@@ -50,10 +46,6 @@ Resources:
       QueueName: passroute-embed-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-      RedriveAllowPolicy:
-        redrivePermission: byQueue
-        sourceQueueArns:
-          - !GetAtt EmbedQueue.Arn
 
   # ── SQS: DB 적재 큐 (embed_worker → db_loader) ──
   DbLoadQueue:
@@ -73,10 +65,6 @@ Resources:
       QueueName: passroute-db-load-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-      RedriveAllowPolicy:
-        redrivePermission: byQueue
-        sourceQueueArns:
-          - !GetAtt DbLoadQueue.Arn
 
   # ── SQS: 소스별 목록 수집 큐 ──
   SourceCollectQueue:
@@ -96,10 +84,6 @@ Resources:
       QueueName: passroute-source-collect-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-      RedriveAllowPolicy:
-        redrivePermission: byQueue
-        sourceQueueArns:
-          - !GetAtt SourceCollectQueue.Arn
 
   # ── SQS: 기업별 수집 큐 (WebSocket → company_collect_worker) ──
   CompanyCollectQueue:
@@ -119,10 +103,6 @@ Resources:
       QueueName: passroute-company-collect-dlq
       MessageRetentionPeriod: 604800
       SqsManagedSseEnabled: true
-      RedriveAllowPolicy:
-        redrivePermission: byQueue
-        sourceQueueArns:
-          - !GetAtt CompanyCollectQueue.Arn
 
 Outputs:
   # ── Queue URLs (Lambda 환경변수용) ──
