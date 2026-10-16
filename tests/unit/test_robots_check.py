@@ -1,5 +1,4 @@
 """robots_check.py 단위 테스트."""
-import time
 from unittest.mock import MagicMock, patch
 
 from crawler.robots_check import RobotsChecker

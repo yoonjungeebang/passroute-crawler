@@ -149,7 +149,7 @@ class TestGetBreaker:
         assert b.recovery_timeout == 120.0
 
     def test_ignores_parameters_on_subsequent_calls(self):
-        b1 = get_breaker("once", failure_threshold=3)
+        get_breaker("once", failure_threshold=3)
         b2 = get_breaker("once", failure_threshold=99)
         assert b2.failure_threshold == 3  # 첫 호출의 값 유지
 

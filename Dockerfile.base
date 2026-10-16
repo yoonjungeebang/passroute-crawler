@@ -33,5 +33,5 @@ COPY --from=embedding-builder /tmp/kr-sbert-uint8.onnx /app/models/kr-sbert-uint
 COPY --from=embedding-builder /tmp/tokenizer/ /app/models/tokenizer/
 
 # 런타임 의존성 설치
-COPY src/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
+COPY src/requirements-docker.txt ${LAMBDA_TASK_ROOT}/requirements.txt
 RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt

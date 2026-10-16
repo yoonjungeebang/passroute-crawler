@@ -17,31 +17,22 @@ Parameters:
     Type: String
     Description: 네이버 API 크레덴셜이 저장된 Secrets Manager ARN
     NoEcho: true
-  SuperookieApiSecretArn:
-    Type: String
-    Description: 슈퍼루키 API 액세스 토큰이 저장된 Secrets Manager ARN
-    NoEcho: true
-    Default: ''
   DiscordWebhookSecretArn:
     Type: String
     Description: Discord 웹훅 URL이 저장된 Secrets Manager ARN (#dlq 채널)
     NoEcho: true
-    Default: ''
   DiscordMonitorWebhookSecretArn:
     Type: String
     Description: Discord #monitor 채널 웹훅 URL이 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   JwtSecretArn:
     Type: String
     Description: JWT 서명 검증용 시크릿(Base64)이 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   WsApiKeySecretArn:
     Type: String
     Description: WebSocket API 키가 저장된 Secrets Manager ARN
     NoEcho: true
-    Default: ''
   CorsAllowOrigin:
     Type: String
     Description: API Gateway CORS 허용 오리진 (프론트엔드 도메인)
@@ -53,9 +44,19 @@ Globals:
     Timeout: 300
     LoggingConfig:
       LogFormat: JSON
-      LogRetentionInDays: 30
 
 Resources:
+  # ── 공유 의존성 Layer ──
+  SharedDepsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: passroute-shared-deps
+      ContentUri: ../layers/shared/
+      CompatibleRuntimes:
+        - python3.12
+    Metadata:
+      BuildMethod: python3.12
+
   # ── VPC (Nested Stack) ──
   VPCStack:
     Type: AWS::CloudFormation::Stack
@@ -72,12 +73,14 @@ Resources:
   DeleteExpiredJobs:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.delete_expired_jobs
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
@@ -95,12 +98,14 @@ Resources:
   JobListCollector:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.job_list_collector
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           SOURCE_COLLECT_QUEUE_URL: !GetAtt MessagingStack.Outputs.SourceCollectQueueUrl
@@ -118,12 +123,14 @@ Resources:
   SourceCollectWorker:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.source_collect_worker
       Timeout: 900
       ReservedConcurrentExecutions: 4
       MemorySize: 512
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -135,7 +142,6 @@ Resources:
           JOB_DETAIL_QUEUE_URL: !GetAtt MessagingStack.Outputs.JobDetailQueueUrl
           DATABASE_SECRET_ARN: !Ref DatabaseSecretArn
           DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
-          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.JobDetailQueueName
@@ -145,7 +151,6 @@ Resources:
               Resource:
                 - !Ref DatabaseSecretArn
                 - !Ref DiscordMonitorWebhookSecretArn
-                - !Ref SuperookieApiSecretArn
         - VPCAccessPolicy: {}
       Events:
         SQSTrigger:
@@ -160,16 +165,17 @@ Resources:
   JobCrawler:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.job_crawl
       Timeout: 120
       MemorySize: 512
       ReservedConcurrentExecutions: 5
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           EMBED_QUEUE_URL: !GetAtt MessagingStack.Outputs.EmbedQueueUrl
-          SUPEROOKIE_API_SECRET_ARN: !Ref SuperookieApiSecretArn
           DISCORD_MONITOR_WEBHOOK_SECRET_ARN: !Ref DiscordMonitorWebhookSecretArn
       Policies:
         - SQSSendMessagePolicy:
@@ -178,7 +184,6 @@ Resources:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource:
-                - !Ref SuperookieApiSecretArn
                 - !Ref DiscordMonitorWebhookSecretArn
       Events:
         SQSTrigger:
@@ -216,7 +221,7 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
     Metadata:
-      DockerTag: python3.11
+      DockerTag: python3.12
       DockerContext: ..
       Dockerfile: src/Dockerfile
       DockerBuildArgs:
@@ -226,12 +231,14 @@ Resources:
   DbLoader:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.db_loader
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 5
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -271,12 +278,14 @@ Resources:
   CompanyCollectWorker:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.company_collect_worker
       Timeout: 900
       MemorySize: 512
       ReservedConcurrentExecutions: 15
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -318,12 +327,14 @@ Resources:
   CompanyQuery:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.company_query
       Timeout: 10
       MemorySize: 256
       ReservedConcurrentExecutions: 200
+      Layers:
+        - !Ref SharedDepsLayer
       VpcConfig:
         SubnetIds:
           - !GetAtt VPCStack.Outputs.PrivateSubnetA
@@ -351,11 +362,13 @@ Resources:
   JwtAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: authorizer.handler
       Timeout: 10
       MemorySize: 128
+      Layers:
+        - !Ref SharedDepsLayer
       Environment:
         Variables:
           JWT_SECRET: !Sub '{{resolve:secretsmanager:${JwtSecretArn}:SecretString:jwt_secret}}'

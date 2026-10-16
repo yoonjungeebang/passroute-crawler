@@ -35,6 +35,7 @@ _DEFAULT_FEEDS: tuple[BlogFeed, ...] = tuple(
     for f in _BLOG_CONFIG["feeds"]
 )
 
+
 def _build_domain_to_feed_map() -> dict[str, str]:
     """도메인 → RSS 피드 URL 매핑을 생성한다."""
     mapping: dict[str, str] = {}

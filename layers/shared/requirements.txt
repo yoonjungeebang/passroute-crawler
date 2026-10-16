@@ -1,0 +1,8 @@
+boto3
+requests
+beautifulsoup4
+feedparser
+trafilatura
+psycopg2-binary
+PyJWT
+PyYAML

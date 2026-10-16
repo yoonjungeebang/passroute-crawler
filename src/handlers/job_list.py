@@ -172,5 +172,3 @@ def _send_batch(sqs, queue_url: str, entries: list[dict]) -> int:
             f.get("Id"), f.get("Code"), f.get("Message"),
         )
     return len(still_failed)
-
-

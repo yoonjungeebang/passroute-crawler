@@ -78,5 +78,3 @@ def test_get_discord_webhook_url(mock_get_secret):
     result = secrets_mod.get_discord_webhook_url()
 
     assert result == "https://discord.com/api/webhooks/test"
-
-

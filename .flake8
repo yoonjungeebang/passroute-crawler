@@ -1,3 +1,4 @@
 [flake8]
+max-line-length = 200
 per-file-ignores =
     src/app.py: F401

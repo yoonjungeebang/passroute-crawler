@@ -5,13 +5,11 @@ from crawler.base import JobCrawler
 from crawler.sites.jumpit import JumpitCrawler
 from crawler.sites.programmers import ProgrammersCrawler
 from crawler.sites.rallit import RallitCrawler
-from crawler.sites.superookie import SuperookieCrawler
 
 CRAWLER_CLASSES: list[type[JobCrawler]] = [
     JumpitCrawler,
     ProgrammersCrawler,
     RallitCrawler,
-    SuperookieCrawler,
 ]
 
 _CRAWLER_BY_SOURCE: dict[str, type[JobCrawler]] = {

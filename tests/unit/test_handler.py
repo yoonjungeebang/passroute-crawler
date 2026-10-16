@@ -73,7 +73,7 @@ def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
     assert mock_sqs.send_message.call_count == 2
 
 
-@patch("handlers.cleanup.boto3.client")
+@patch("handlers.job_cleanup.boto3.client")
 def test_delete_expired_jobs_sends_message(mock_boto_client):
     """만료 삭제 메시지가 DbLoadQueue 로 전송되어야 한다."""
     mock_sqs = MagicMock()
@@ -106,9 +106,9 @@ def test_job_list_collector_fails_fast_when_queue_url_missing(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.collect.boto3.client")
-@patch("handlers.collect.get_pg_storage")
-@patch("handlers.collect.get_crawler")
+@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list.get_pg_storage")
+@patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_dispatches_new_listings(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -143,9 +143,9 @@ def test_source_collect_worker_dispatches_new_listings(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.collect.boto3.client")
-@patch("handlers.collect.get_pg_storage")
-@patch("handlers.collect.get_crawler")
+@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list.get_pg_storage")
+@patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_skips_title_duplicates(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -180,9 +180,9 @@ def test_source_collect_worker_skips_title_duplicates(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.collect.boto3.client")
-@patch("handlers.collect.get_pg_storage")
-@patch("handlers.collect.get_crawler")
+@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list.get_pg_storage")
+@patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_skips_blocked_source(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -207,9 +207,9 @@ def test_source_collect_worker_skips_blocked_source(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.collect.boto3.client")
-@patch("handlers.collect.get_pg_storage")
-@patch("handlers.collect.get_crawler")
+@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list.get_pg_storage")
+@patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_partial_failure(
     mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
 ):
@@ -238,9 +238,9 @@ def test_source_collect_worker_partial_failure(
 # ─────────────────────────────────────────────────────────
 
 
-@patch("handlers.crawl.time.sleep")
-@patch("handlers.crawl.boto3.client")
-@patch("handlers.crawl.get_crawler")
+@patch("handlers.job_detail.time.sleep")
+@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail.get_crawler")
 def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock_sleep):
     """상세 크롤링 성공 시 SQS EmbedQueue 로 메시지가 전송되어야 한다."""
     mock_sqs = MagicMock()
@@ -267,9 +267,9 @@ def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock
     mock_sleep.assert_called_once()
 
 
-@patch("handlers.crawl.time.sleep")
-@patch("handlers.crawl.boto3.client")
-@patch("handlers.crawl.get_crawler")
+@patch("handlers.job_detail.time.sleep")
+@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail.get_crawler")
 def test_job_crawl_skips_when_fetch_returns_none(
     mock_get_crawler, mock_boto_client, mock_sleep,
 ):
@@ -293,9 +293,9 @@ def test_job_crawl_skips_when_fetch_returns_none(
     mock_sqs.send_message.assert_not_called()
 
 
-@patch("handlers.crawl.time.sleep")
-@patch("handlers.crawl.boto3.client")
-@patch("handlers.crawl.get_crawler")
+@patch("handlers.job_detail.time.sleep")
+@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail.get_crawler")
 def test_job_crawl_reports_failure_in_batch_item_failures(
     mock_get_crawler, mock_boto_client, mock_sleep,
 ):

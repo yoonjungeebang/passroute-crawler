@@ -85,7 +85,7 @@ Resources:
   WsConnectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.ws_connect
       Timeout: 10
@@ -94,7 +94,7 @@ Resources:
   WsDisconnectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.ws_disconnect
       Timeout: 10
@@ -109,7 +109,7 @@ Resources:
   WsCollectFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.ws_collect
       Timeout: 10
@@ -135,7 +135,7 @@ Resources:
   WsAuthorizerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       CodeUri: ../src/
       Handler: app.ws_authorizer
       Timeout: 5
@@ -164,7 +164,8 @@ Resources:
       ApiId: !Ref CompanyWebSocketApi
       AuthorizerType: REQUEST
       AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsAuthorizerFunction.Arn}/invocations"
-      IdentitySource: route.request.querystring.x-api-key
+      IdentitySource:
+        - route.request.querystring.x-api-key
 
   # ── WebSocket Routes ──
   ConnectRoute:

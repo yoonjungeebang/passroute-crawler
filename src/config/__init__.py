@@ -97,7 +97,6 @@ def load_circuit_breaker_config() -> dict:
     }
 
 
-
 def load_dedup_config() -> dict:
     """중복 감지 설정을 로드한다."""
     raw = load_yaml("dedup.yaml")
@@ -122,5 +121,3 @@ def load_api_config() -> dict:
         "ws_connection_ttl": int(raw.get("ws_connection_ttl", 3600)),
         "collect_cooldown": int(raw.get("collect_cooldown", 300)),
     }
-
-
