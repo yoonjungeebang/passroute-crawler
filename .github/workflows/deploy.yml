@@ -68,6 +68,23 @@ jobs:
           sam build --parameter-overrides \
             BaseImageUri=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ secrets.BASE_IMAGE_TAG }}
 
+      - name: Clean up failed stack
+        run: |
+          STACK_NAME="passroute-crawler"
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          echo "Stack status: $STATUS"
+          case "$STATUS" in
+            ROLLBACK_COMPLETE|ROLLBACK_FAILED|DELETE_FAILED)
+              echo "Deleting broken stack ($STATUS)..."
+              aws cloudformation delete-stack --stack-name "$STACK_NAME"
+              aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+              echo "Stack deleted."
+              ;;
+          esac
+
       - name: SAM deploy
         run: |
           sam deploy \
