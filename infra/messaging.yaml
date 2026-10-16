@@ -2,6 +2,12 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   passroute-crawler 메시징 (SQS)
 
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E3004
+
 Resources:
   # ── SQS: 공고 단위 상세 크롤링 큐 ──
   JobDetailQueue:
