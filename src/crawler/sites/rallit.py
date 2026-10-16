@@ -98,4 +98,3 @@ class RallitCrawler(JobCrawler):
             crawled_at=datetime.now(KST).isoformat(),
             career_level=ref.career_level,
         )
-

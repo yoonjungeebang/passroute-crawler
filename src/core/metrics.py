@@ -25,7 +25,6 @@ class MetricsLogger:
         self._values: dict[str, float] = {}
         self._dimensions: dict[str, str] = {"FunctionName": function_name}
 
-
     def put_metric(self, name: str, value: float, unit: str = "None") -> None:
         """메트릭 값을 기록한다."""
         self._metrics.append({"Name": name, "Unit": unit})

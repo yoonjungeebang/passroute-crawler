@@ -22,6 +22,7 @@ _REQUIRED_RAW_FIELDS: dict[str, type | tuple[type, ...]] = {
     "crawled_at": str,
 }
 
+
 def _validate_raw_schema(data: dict) -> list[str]:
     """raw JSON 데이터의 스키마를 검증한다. 위반 목록을 반환."""
     errors: list[str] = []
@@ -34,6 +35,7 @@ def _validate_raw_schema(data: dict) -> list[str]:
                 f"(expected: {expected_type})"
             )
     return errors
+
 
 logger = logging.getLogger(__name__)
 

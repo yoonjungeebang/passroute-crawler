@@ -3,9 +3,8 @@
 API 호출은 mock 으로 대체하고, 노이즈 필터링·HTML 태그 제거·
 pubDate 파싱·중복 제거·deadline 계산 등을 검증한다.
 """
-import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -242,5 +241,3 @@ class TestNaverNewsCollector:
 
         assert collector.session.headers["X-NCP-APIGW-API-KEY-ID"] == "test_id"
         assert collector.session.headers["X-NCP-APIGW-API-KEY"] == "test_secret"
-
-
