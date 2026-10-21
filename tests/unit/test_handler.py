@@ -7,8 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import app
 from crawler.base import JobDetail, JobListingRef
+from handlers.job_cleanup import delete_expired_jobs
+from handlers.job_dispatch import job_list_collector
+from handlers.job_list import source_collect_worker
+from handlers.job_detail import job_crawl
 
 
 # ─────────────────────────────────────────────────────────
@@ -66,7 +69,7 @@ def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
     mock_sqs = MagicMock()
     mock_boto_client.return_value = mock_sqs
 
-    result = app.job_list_collector({}, None)
+    result = job_list_collector({}, None)
 
     body = json.loads(result["body"])
     assert body["dispatched_sources"] == ["jumpit", "programmers"]
@@ -79,7 +82,7 @@ def test_delete_expired_jobs_sends_message(mock_boto_client):
     mock_sqs = MagicMock()
     mock_boto_client.return_value = mock_sqs
 
-    result = app.delete_expired_jobs({}, None)
+    result = delete_expired_jobs({}, None)
 
     mock_sqs.send_message.assert_called_once()
     msg = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
@@ -97,7 +100,7 @@ def test_job_list_collector_fails_fast_when_queue_url_missing(
     monkeypatch.delenv("SOURCE_COLLECT_QUEUE_URL", raising=False)
 
     with pytest.raises(RuntimeError, match="SOURCE_COLLECT_QUEUE_URL"):
-        app.job_list_collector({}, None)
+        job_list_collector({}, None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -136,7 +139,7 @@ def test_source_collect_worker_dispatches_new_listings(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["333"]
@@ -173,7 +176,7 @@ def test_source_collect_worker_skips_title_duplicates(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["222"]
@@ -201,7 +204,7 @@ def test_source_collect_worker_skips_blocked_source(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "blocked_site"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     mock_crawler.collect_listings.assert_not_called()
 
@@ -229,7 +232,7 @@ def test_source_collect_worker_partial_failure(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    result = app.source_collect_worker(event, None)
+    result = source_collect_worker(event, None)
     assert result["batchItemFailures"] == [{"itemIdentifier": "test-msg-001"}]
 
 
@@ -257,7 +260,7 @@ def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock
         "company_name": "패스루트",
         "title": "백엔드 채용",
     })
-    app.job_crawl(event, None)
+    job_crawl(event, None)
 
     mock_sqs.send_message.assert_called_once()
     sent_body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
@@ -288,7 +291,7 @@ def test_job_crawl_skips_when_fetch_returns_none(
         "company_name": "A",
         "title": "t",
     })
-    app.job_crawl(event, None)
+    job_crawl(event, None)
 
     mock_sqs.send_message.assert_not_called()
 
@@ -314,6 +317,6 @@ def test_job_crawl_reports_failure_in_batch_item_failures(
         "title": "t",
     })
 
-    result = app.job_crawl(event, None)
+    result = job_crawl(event, None)
     assert len(result["batchItemFailures"]) == 1
     assert result["batchItemFailures"][0]["itemIdentifier"] == "test-msg-001"
