@@ -1,8 +1,9 @@
 """pytest 공통 설정.
 
 - ``src/`` 를 sys.path 최상위에 두어 Lambda 런타임과 동일한 import 경로를 만든다.
-- ``app.py`` 가 핸들러 진입 시점에 검증하는 필수 환경변수를 autouse fixture 로 채운다.
+- 핸들러 진입 시점에 검증하는 필수 환경변수를 autouse fixture 로 채운다.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -13,6 +14,10 @@ SRC_DIR = PROJECT_ROOT / "src"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+# 모듈 레벨 boto3 클라이언트 생성에 필요한 리전 설정.
+# fixture보다 모듈 import가 먼저 실행되므로 os.environ으로 직접 설정한다.
+os.environ.setdefault("AWS_DEFAULT_REGION", "ap-northeast-2")
 
 
 @pytest.fixture(autouse=True)
