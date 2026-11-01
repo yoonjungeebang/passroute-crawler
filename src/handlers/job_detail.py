@@ -13,6 +13,8 @@ from ._common import required_env
 
 logger = logging.getLogger(__name__)
 
+_sqs = boto3.client("sqs")
+
 
 def job_crawl(event, context):
     """SQS 트리거. 공고 1건 상세 크롤링 → EmbedQueue 로 전송.
@@ -27,7 +29,6 @@ def job_crawl(event, context):
     metrics = MetricsLogger(function_name="job_crawl")
     crawl_count = 0
     failures: list[dict] = []
-    sqs = boto3.client("sqs")
     embed_queue_url = required_env("EMBED_QUEUE_URL")
 
     for record in event["Records"]:
@@ -63,7 +64,7 @@ def job_crawl(event, context):
             body = _detail_to_dict(detail)
             if trace_id:
                 body["trace_id"] = trace_id
-            sqs.send_message(
+            _sqs.send_message(
                 QueueUrl=embed_queue_url,
                 MessageBody=json.dumps(body, ensure_ascii=False),
             )

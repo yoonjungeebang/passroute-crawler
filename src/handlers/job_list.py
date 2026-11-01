@@ -12,6 +12,8 @@ SQS_BATCH_SIZE = 10
 
 logger = logging.getLogger(__name__)
 
+_sqs = boto3.client("sqs")
+
 
 def source_collect_worker(event, context):
     """소스 1건 목록 수집 → 신규 공고 JobDetailQueue 전송.
@@ -19,7 +21,6 @@ def source_collect_worker(event, context):
     """
     from crawler.robots_check import RobotsChecker  # noqa: C0415
 
-    sqs = boto3.client("sqs")
     pg = get_pg_storage()
     queue_url = required_env("JOB_DETAIL_QUEUE_URL")
     robots_checker = RobotsChecker()
@@ -48,7 +49,7 @@ def source_collect_worker(event, context):
             existing_titles = pg.get_existing_company_titles(company_norms)
 
             new_count, title_dup_count = _dispatch_new_listings(
-                sqs, queue_url, refs, existing_urls, existing_titles,
+                queue_url, refs, existing_urls, existing_titles,
             )
 
             logger.info(
@@ -96,7 +97,7 @@ def _check_listing_quality(source: str, refs: list[JobListingRef]) -> None:
 
 
 def _dispatch_new_listings(
-    sqs, queue_url: str, refs: list[JobListingRef],
+    queue_url: str, refs: list[JobListingRef],
     existing_urls: set[str],
     existing_titles: set[tuple[str, str]],
 ) -> tuple[int, int]:
@@ -139,11 +140,11 @@ def _dispatch_new_listings(
         new_count += 1
 
         if len(batch) == SQS_BATCH_SIZE:
-            failed_count += _send_batch(sqs, queue_url, batch)
+            failed_count += _send_batch(queue_url, batch)
             batch = []
 
     if batch:
-        failed_count += _send_batch(sqs, queue_url, batch)
+        failed_count += _send_batch(queue_url, batch)
 
     if failed_count:
         logger.error("SQS 배치 전송 부분 실패: %d건 실패 (전체 %d건)", failed_count, new_count)
@@ -151,20 +152,20 @@ def _dispatch_new_listings(
     return new_count, title_dup_count
 
 
-def _send_batch(sqs, queue_url: str, entries: list[dict]) -> int:
+def _send_batch(queue_url: str, entries: list[dict]) -> int:
     """SQS 배치 전송 후 부분 실패 건수를 반환한다.
 
     부분 실패한 메시지는 1회 재시도한다. SQS 부분 실패는 일시적 서비스 오류가
     대부분이므로 즉시 재시도로 복구할 수 있다. 재시도 후에도 실패하면 로깅한다.
     """
-    resp = sqs.send_message_batch(QueueUrl=queue_url, Entries=entries)
+    resp = _sqs.send_message_batch(QueueUrl=queue_url, Entries=entries)
     failed = resp.get("Failed", [])
     if not failed:
         return 0
 
     failed_ids = {f["Id"] for f in failed}
     retry_entries = [e for e in entries if e["Id"] in failed_ids]
-    retry_resp = sqs.send_message_batch(QueueUrl=queue_url, Entries=retry_entries)
+    retry_resp = _sqs.send_message_batch(QueueUrl=queue_url, Entries=retry_entries)
     still_failed = retry_resp.get("Failed", [])
     for f in still_failed:
         logger.warning(

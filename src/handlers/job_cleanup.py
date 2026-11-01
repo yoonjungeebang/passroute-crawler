@@ -8,15 +8,16 @@ from ._common import required_env
 
 logger = logging.getLogger(__name__)
 
+_sqs = boto3.client("sqs")
+
 
 def delete_expired_jobs(event, context):
     """매일 마감된 공고 삭제 요청을 DbLoadQueue 로 전송."""
-    sqs = boto3.client("sqs")
     db_load_queue_url = required_env("DB_LOAD_QUEUE_URL")
 
     now_ts = int(datetime.now(KST).timestamp())
     timestamp = datetime.now(KST).strftime("%Y%m%dT%H%M%S")
-    sqs.send_message(
+    _sqs.send_message(
         QueueUrl=db_load_queue_url,
         MessageBody=json.dumps({
             "type": "delete_expired",

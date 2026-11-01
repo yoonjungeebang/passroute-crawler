@@ -7,17 +7,18 @@ from ._common import required_env
 
 logger = logging.getLogger(__name__)
 
+_sqs = boto3.client("sqs")
+
 
 def job_list_collector(event, context):
     """소스별 수집 메시지를 SourceCollectQueue 로 발행."""
-    sqs = boto3.client("sqs")
     source_queue_url = required_env("SOURCE_COLLECT_QUEUE_URL")
 
     sources = list(iter_sources())
     logger.info("[디스패치] 수집 대상 소스 %d건: %s", len(sources), sources)
 
     for source in sources:
-        sqs.send_message(
+        _sqs.send_message(
             QueueUrl=source_queue_url,
             MessageBody=json.dumps({"source": source}, ensure_ascii=False),
         )
