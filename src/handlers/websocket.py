@@ -18,6 +18,11 @@ _QUEUE_URL = required_env("COMPANY_COLLECT_QUEUE_URL")
 _WS_CONNECTION_TTL = int(_API_CONFIG.get("ws_connection_ttl", 3600))
 _COLLECT_COOLDOWN = int(_API_CONFIG.get("collect_cooldown", 300))
 
+# Lambda 웜 스타트 시 커넥션 재사용을 위한 모듈 레벨 클라이언트
+_dynamodb = boto3.resource("dynamodb")
+_sqs = boto3.client("sqs")
+_apigw_clients: dict[str, object] = {}
+
 
 def ws_authorizer(event, context):
     """$connect Lambda Authorizer: API Key 검증."""
@@ -75,8 +80,7 @@ def ws_connect(event, context):
 def ws_disconnect(event, context):
     """$disconnect: DynamoDB에서 연결 정보 삭제."""
     connection_id = event["requestContext"]["connectionId"]
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_CONNECTIONS_TABLE)
+    table = _dynamodb.Table(_CONNECTIONS_TABLE)
 
     try:
         table.delete_item(Key={"connectionId": connection_id})
@@ -110,12 +114,11 @@ def ws_collect(event, context):
     keywords = body.get("keywords", "").strip()
     max_articles = str(body.get("max_articles", "10"))
 
-    dynamodb = boto3.resource("dynamodb")
     now = int(time.time())
     ttl = now + _WS_CONNECTION_TTL
 
     # 연결 정보 저장 (company GSI를 통해 수집 완료 시 전체 푸시에 사용)
-    conn_table = dynamodb.Table(_CONNECTIONS_TABLE)
+    conn_table = _dynamodb.Table(_CONNECTIONS_TABLE)
     conn_table.put_item(Item={
         "connectionId": connection_id,
         "company": company,
@@ -133,13 +136,12 @@ def ws_collect(event, context):
     collect_key = _make_collect_key(company, position, tech_stack, keywords)
 
     # 원자적 중복 수집 방지: ConditionExpression으로 race condition 해결
-    need_collect = _try_claim_collect(dynamodb, collect_key, now)
+    need_collect = _try_claim_collect(collect_key, now)
     mode = "collect" if need_collect else "cache_only"
 
     # SQS에 요청 적재 (워커가 캐시 반환 또는 실시간 수집 수행)
-    sqs = boto3.client("sqs")
     try:
-        sqs.send_message(
+        _sqs.send_message(
             QueueUrl=_QUEUE_URL,
             MessageBody=json.dumps({
                 "company": company,
@@ -161,15 +163,9 @@ def ws_collect(event, context):
     return {"statusCode": 200}
 
 
-def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
-    """원자적으로 수집 권한을 획득한다. 성공하면 True, 이미 수집 중이면 False.
-
-    DynamoDB ConditionExpression을 사용해 race condition을 방지한다.
-    - 레코드가 없으면: 생성 → True
-    - 레코드가 있고 cooldown 지남: 덮어쓰기 → True
-    - 레코드가 있고 cooldown 안 지남: 실패 → False
-    """
-    table = dynamodb.Table(_COLLECT_STATUS_TABLE)
+def _try_claim_collect(collect_key: str, now: int) -> bool:
+    """동시 요청이 와도 하나만 수집하도록 선착순으로 잠금을 건다."""
+    table = _dynamodb.Table(_COLLECT_STATUS_TABLE)
     cutoff = now - _COLLECT_COOLDOWN
 
     try:
@@ -183,16 +179,23 @@ def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
             ConditionExpression=(Attr("collectKey").not_exists() | Attr("updatedAt").lt(cutoff)),
         )
         return True
-    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+    except _dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
         return False
     except Exception:
         logger.exception("수집 상태 원자적 기록 실패: %s", collect_key)
         return False
 
 
+def _get_apigw_client(endpoint: str):
+    """endpoint별 API Gateway Management 클라이언트를 캐싱해서 반환한다."""
+    if endpoint not in _apigw_clients:
+        _apigw_clients[endpoint] = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+    return _apigw_clients[endpoint]
+
+
 def _send_to_client(endpoint: str, connection_id: str, data: dict) -> None:
     """WebSocket API를 통해 클라이언트에 메시지를 전송한다."""
-    apigw = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+    apigw = _get_apigw_client(endpoint)
     try:
         apigw.post_to_connection(
             ConnectionId=connection_id,
@@ -220,8 +223,7 @@ def _make_collect_key(company: str, position: str, tech_stack: str, keywords: st
 
 def _increment_request_count(company: str) -> None:
     """기업별 요청 횟수를 원자적으로 증가시킨다. 프리워밍 판단 데이터로 활용."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_REQUEST_COUNTS_TABLE)
+    table = _dynamodb.Table(_REQUEST_COUNTS_TABLE)
     try:
         table.update_item(
             Key={"company": company},

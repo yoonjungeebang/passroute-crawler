@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 _COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
 _CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
 
+# Lambda 웜 스타트 시 커넥션 재사용을 위한 모듈 레벨 클라이언트
+_dynamodb = boto3.resource("dynamodb")
+_apigw_clients: dict[str, object] = {}
+
 
 def company_collect_worker(event, context):
     """SQS 트리거: 기업별 뉴스/블로그 수집 → DB 저장 → 전체 연결에 WebSocket 푸시."""
@@ -266,8 +270,7 @@ def _collect_company_data(
 
 def _update_collect_status(collect_key: str, status: str) -> None:
     """수집 상태를 DynamoDB에 업데이트한다."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_COLLECT_STATUS_TABLE)
+    table = _dynamodb.Table(_COLLECT_STATUS_TABLE)
     now = int(time.time())
     cooldown = int(_API_CONFIG.get("collect_cooldown", 300))
     try:
@@ -315,8 +318,7 @@ def _get_cached_data(company: str) -> dict | None:
 
 def _push_to_all_connections(company: str, result: dict, *, status: str = "done") -> None:
     """해당 company를 요청한 모든 WebSocket 연결에 결과를 푸시한다."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_CONNECTIONS_TABLE)
+    table = _dynamodb.Table(_CONNECTIONS_TABLE)
 
     # company GSI로 해당 기업의 모든 연결 조회
     try:
@@ -351,7 +353,9 @@ def _push_to_all_connections(company: str, result: dict, *, status: str = "done"
         if not endpoint:
             continue
 
-        apigw = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+        if endpoint not in _apigw_clients:
+            _apigw_clients[endpoint] = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+        apigw = _apigw_clients[endpoint]
         try:
             apigw.post_to_connection(ConnectionId=connection_id, Data=payload)
             pushed += 1
