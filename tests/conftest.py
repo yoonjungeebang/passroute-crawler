@@ -44,3 +44,7 @@ def _set_required_env(monkeypatch):
     monkeypatch.setenv("DATABASE_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/database")
     monkeypatch.setenv("NAVER_API_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/naver-api")
     monkeypatch.setenv("DISCORD_WEBHOOK_SECRET_ARN", "arn:aws:secretsmanager:ap-northeast-2:123456:secret:passroute/discord")
+    monkeypatch.setenv("WS_CONNECTIONS_TABLE", "passroute-ws-connections")
+    monkeypatch.setenv("COLLECT_STATUS_TABLE", "passroute-collect-status")
+    monkeypatch.setenv("COMPANY_REQUEST_COUNTS_TABLE", "passroute-company-request-counts")
+    monkeypatch.setenv("COMPANY_COLLECT_QUEUE_URL", "https://sqs.test/company-collect")

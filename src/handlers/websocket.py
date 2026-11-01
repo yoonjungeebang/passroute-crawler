@@ -2,20 +2,19 @@
 import hashlib
 import json
 import logging
-import os
 import time
 
 import boto3
 from boto3.dynamodb.conditions import Attr
 
-from ._common import _API_CONFIG
+from ._common import _API_CONFIG, required_env
 
 logger = logging.getLogger(__name__)
 
-_TABLE_NAME = os.environ.get("WS_CONNECTIONS_TABLE", "passroute-ws-connections")
-_COLLECT_STATUS_TABLE = os.environ.get("COLLECT_STATUS_TABLE", "passroute-collect-status")
-_REQUEST_COUNTS_TABLE = os.environ.get("COMPANY_REQUEST_COUNTS_TABLE", "passroute-company-request-counts")
-_QUEUE_URL = os.environ.get("COMPANY_COLLECT_QUEUE_URL", "")
+_CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
+_COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
+_REQUEST_COUNTS_TABLE = required_env("COMPANY_REQUEST_COUNTS_TABLE")
+_QUEUE_URL = required_env("COMPANY_COLLECT_QUEUE_URL")
 _WS_CONNECTION_TTL = int(_API_CONFIG.get("ws_connection_ttl", 3600))
 _COLLECT_COOLDOWN = int(_API_CONFIG.get("collect_cooldown", 300))
 
@@ -77,7 +76,7 @@ def ws_disconnect(event, context):
     """$disconnect: DynamoDB에서 연결 정보 삭제."""
     connection_id = event["requestContext"]["connectionId"]
     dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_TABLE_NAME)
+    table = dynamodb.Table(_CONNECTIONS_TABLE)
 
     try:
         table.delete_item(Key={"connectionId": connection_id})
@@ -116,7 +115,7 @@ def ws_collect(event, context):
     ttl = now + _WS_CONNECTION_TTL
 
     # 연결 정보 저장 (company GSI를 통해 수집 완료 시 전체 푸시에 사용)
-    conn_table = dynamodb.Table(_TABLE_NAME)
+    conn_table = dynamodb.Table(_CONNECTIONS_TABLE)
     conn_table.put_item(Item={
         "connectionId": connection_id,
         "company": company,
