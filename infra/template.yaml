@@ -71,7 +71,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.delete_expired_jobs
+      Handler: handlers.job_cleanup.delete_expired_jobs
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
@@ -96,7 +96,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.job_list_collector
+      Handler: handlers.job_dispatch.job_list_collector
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 1
@@ -121,7 +121,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.source_collect_worker
+      Handler: handlers.job_list.source_collect_worker
       Timeout: 900
       ReservedConcurrentExecutions: 4
       MemorySize: 512
@@ -163,7 +163,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.job_crawl
+      Handler: handlers.job_detail.job_crawl
       Timeout: 120
       MemorySize: 512
       ReservedConcurrentExecutions: 5
@@ -203,7 +203,7 @@ Resources:
           DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
       ImageConfig:
         Command:
-          - app.embed_worker
+          - handlers.job_embed.embed_worker
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
@@ -219,7 +219,7 @@ Resources:
     Metadata:
       DockerTag: python3.12
       DockerContext: ..
-      Dockerfile: src/Dockerfile
+      Dockerfile: Dockerfile
       DockerBuildArgs:
         BASE_IMAGE: !Ref BaseImageUri
 
@@ -229,7 +229,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.db_loader
+      Handler: handlers.job_load.db_loader
       Timeout: 60
       MemorySize: 256
       ReservedConcurrentExecutions: 5
@@ -275,7 +275,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.company_collect_worker
+      Handler: handlers.company_content_worker.company_collect_worker
       Timeout: 900
       MemorySize: 512
       ReservedConcurrentExecutions: 15
@@ -324,7 +324,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.company_query
+      Handler: handlers.company_query.company_query
       Timeout: 10
       MemorySize: 256
       ReservedConcurrentExecutions: 200

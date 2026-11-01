@@ -1,6 +1,7 @@
 """핸들러 공통 유틸리티."""
 import logging
 import os
+
 from config import load_api_config
 
 logger = logging.getLogger(__name__)
@@ -15,10 +16,8 @@ def required_env(name: str) -> str:
         raise RuntimeError(f"필수 환경변수 누락: {name}")
     return val
 
-
 # Lambda 웜 스타트 시 DB 커넥션 재사용을 위한 싱글턴
 _pg_storage = None
-
 
 def get_pg_storage():
     """PgVectorStorage 싱글턴. Lambda 웜 스타트 시 커넥션 재사용."""

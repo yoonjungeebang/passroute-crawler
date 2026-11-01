@@ -1,33 +1,58 @@
 """WebSocket 핸들러: 기업별 수집 요청 접수 + 연결 관리."""
 import hashlib
+import hmac
 import json
 import logging
-import os
 import time
 
 import boto3
 from boto3.dynamodb.conditions import Attr
 
-from ._common import _API_CONFIG
+from ._common import _API_CONFIG, required_env
 
 logger = logging.getLogger(__name__)
 
-_TABLE_NAME = os.environ.get("WS_CONNECTIONS_TABLE", "passroute-ws-connections")
-_COLLECT_STATUS_TABLE = os.environ.get("COLLECT_STATUS_TABLE", "passroute-collect-status")
-_REQUEST_COUNTS_TABLE = os.environ.get("COMPANY_REQUEST_COUNTS_TABLE", "passroute-company-request-counts")
-_QUEUE_URL = os.environ.get("COMPANY_COLLECT_QUEUE_URL", "")
 _WS_CONNECTION_TTL = int(_API_CONFIG.get("ws_connection_ttl", 3600))
 _COLLECT_COOLDOWN = int(_API_CONFIG.get("collect_cooldown", 300))
+_MAX_ARTICLES_LIMIT = int(_API_CONFIG.get("max_articles_limit", 20))
+
+_apigw_clients: dict[str, object] = {}
+
+# ws_disconnect / ws_collect 에서 사용하는 환경변수와 boto3 클라이언트.
+# ws_authorizer / ws_connect Lambda는 이 값이 필요 없으므로
+# 모듈 import 시점이 아닌 첫 호출 시점에 초기화한다.
+_CONNECTIONS_TABLE: str | None = None
+_COLLECT_STATUS_TABLE: str | None = None
+_REQUEST_COUNTS_TABLE: str | None = None
+_QUEUE_URL: str | None = None
+_dynamodb = None
+_sqs = None
+
+
+def _ensure_collect_env():
+    """ws_collect 계열 함수가 필요로 하는 환경변수와 boto3 클라이언트를 초기화한다."""
+    global _CONNECTIONS_TABLE, _COLLECT_STATUS_TABLE, _REQUEST_COUNTS_TABLE, _QUEUE_URL, _dynamodb, _sqs
+    if _CONNECTIONS_TABLE is not None:
+        return
+    _CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
+    _COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
+    _REQUEST_COUNTS_TABLE = required_env("COMPANY_REQUEST_COUNTS_TABLE")
+    _QUEUE_URL = required_env("COMPANY_COLLECT_QUEUE_URL")
+    _dynamodb = boto3.resource("dynamodb")
+    _sqs = boto3.client("sqs")
 
 
 def ws_authorizer(event, context):
-    """$connect Lambda Authorizer: API Key 검증."""
-    from core.secrets import get_ws_api_key  # noqa: C0415
+    """클라이언트가 보낸 API Key가 서버에 저장된 키와 일치하는지 확인한다."""
+    from core.secrets import get_ws_api_key
+
+    route_arn = event["methodArn"]
 
     query_params = event.get("queryStringParameters") or {}
     client_key = query_params.get("x-api-key", "")
-
-    route_arn = event["methodArn"]
+    if not client_key:
+        logger.warning("WebSocket 인증 실패: API Key 미제공")
+        return _build_auth_policy(route_arn, "Deny")
 
     try:
         ws_api_key = get_ws_api_key()
@@ -35,26 +60,34 @@ def ws_authorizer(event, context):
         logger.exception("WS API Key 조회 실패")
         return _build_auth_policy(route_arn, "Deny")
 
-    if ws_api_key and client_key == ws_api_key:
+    if not ws_api_key:
+        logger.error("WebSocket 인증 실패: 서버 측 API Key가 설정되지 않음")
+        return _build_auth_policy(route_arn, "Deny")
+
+    if hmac.compare_digest(client_key, ws_api_key):
         logger.info("WebSocket 인증 성공")
         return _build_auth_policy(route_arn, "Allow")
 
-    logger.warning("WebSocket 인증 실패")
+    logger.warning("WebSocket 인증 실패: API Key 불일치")
     return _build_auth_policy(route_arn, "Deny")
 
 
-def _build_auth_policy(method_arn: str, effect: str) -> dict:
-    """IAM 정책 문서를 생성한다."""
-    arn_parts = method_arn.split(":")
-    region = arn_parts[3]
-    account_id = arn_parts[4]
-    api_gw_parts = arn_parts[5].split("/")
-    api_id = api_gw_parts[0]
-    stage = api_gw_parts[1]
+def _build_auth_policy(method_arn: str, effect: str, principal: str = "anonymous") -> dict:
+    """methodArn에서 리소스를 추출해 Allow/Deny IAM 정책을 반환한다."""
+    try:
+        arn_parts = method_arn.split(":")
+        region = arn_parts[3]
+        account_id = arn_parts[4]
+        api_gw_parts = arn_parts[5].split("/")
+        api_id = api_gw_parts[0]
+        stage = api_gw_parts[1]
+    except (IndexError, AttributeError):
+        logger.error("methodArn 파싱 실패: %s", method_arn)
+        raise
 
     resource_arn = f"arn:aws:execute-api:{region}:{account_id}:{api_id}/{stage}/*"
     return {
-        "principalId": "user",
+        "principalId": principal,
         "policyDocument": {
             "Version": "2012-10-17",
             "Statement": [{
@@ -67,17 +100,17 @@ def _build_auth_policy(method_arn: str, effect: str) -> dict:
 
 
 def ws_connect(event, context):
-    """$connect: Authorizer 통과 후 연결 수락."""
+    """인증 통과 후 WebSocket 연결을 수락한다."""
     connection_id = event["requestContext"]["connectionId"]
     logger.info("WebSocket 연결: %s", connection_id)
     return {"statusCode": 200}
 
 
 def ws_disconnect(event, context):
-    """$disconnect: DynamoDB에서 연결 정보 삭제."""
+    """연결이 끊어지면 DynamoDB에서 해당 연결 정보를 삭제한다."""
+    _ensure_collect_env()
     connection_id = event["requestContext"]["connectionId"]
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_TABLE_NAME)
+    table = _dynamodb.Table(_CONNECTIONS_TABLE)
 
     try:
         table.delete_item(Key={"connectionId": connection_id})
@@ -89,7 +122,8 @@ def ws_disconnect(event, context):
 
 
 def ws_collect(event, context):
-    """collect 액션: 원자적 중복 체크 → DynamoDB 저장 → SQS 발송 → 응답."""
+    """수집 요청을 받아 중복 확인 후 SQS에 작업을 넣고 클라이언트에 응답한다."""
+    _ensure_collect_env()
     connection_id = event["requestContext"]["connectionId"]
     domain = event["requestContext"]["domainName"]
     stage = event["requestContext"]["stage"]
@@ -107,16 +141,17 @@ def ws_collect(event, context):
         return {"statusCode": 400}
 
     position = body.get("position", "").strip()[:_API_CONFIG["max_position_length"]]
-    tech_stack = body.get("tech_stack", "").strip()
-    keywords = body.get("keywords", "").strip()
-    max_articles = str(body.get("max_articles", "10"))
+    tech_stack = body.get("tech_stack", "").strip()[:_API_CONFIG["max_company_length"]]
+    keywords = body.get("keywords", "").strip()[:_API_CONFIG["max_company_length"]]
 
-    dynamodb = boto3.resource("dynamodb")
+    raw_max = body.get("max_articles", 10)
+    max_articles = min(max(int(raw_max), 1), _MAX_ARTICLES_LIMIT) if isinstance(raw_max, (int, float)) else 10
+
     now = int(time.time())
     ttl = now + _WS_CONNECTION_TTL
 
     # 연결 정보 저장 (company GSI를 통해 수집 완료 시 전체 푸시에 사용)
-    conn_table = dynamodb.Table(_TABLE_NAME)
+    conn_table = _dynamodb.Table(_CONNECTIONS_TABLE)
     conn_table.put_item(Item={
         "connectionId": connection_id,
         "company": company,
@@ -127,20 +162,19 @@ def ws_collect(event, context):
         "ttl": ttl,
     })
 
-    # 기업별 요청 횟수 기록 (향후 프리워밍 판단용)
+    # 기업별 요청 횟수 기록 (자주 조회되는 기업 캐시 사전 준비용)
     _increment_request_count(company)
 
     # 같은 기업이라도 키워드 조합이 다르면 별도 수집 실행
     collect_key = _make_collect_key(company, position, tech_stack, keywords)
 
     # 원자적 중복 수집 방지: ConditionExpression으로 race condition 해결
-    need_collect = _try_claim_collect(dynamodb, collect_key, now)
+    need_collect = _try_claim_collect(collect_key, now)
     mode = "collect" if need_collect else "cache_only"
 
     # SQS에 요청 적재 (워커가 캐시 반환 또는 실시간 수집 수행)
-    sqs = boto3.client("sqs")
     try:
-        sqs.send_message(
+        _sqs.send_message(
             QueueUrl=_QUEUE_URL,
             MessageBody=json.dumps({
                 "company": company,
@@ -162,15 +196,9 @@ def ws_collect(event, context):
     return {"statusCode": 200}
 
 
-def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
-    """원자적으로 수집 권한을 획득한다. 성공하면 True, 이미 수집 중이면 False.
-
-    DynamoDB ConditionExpression을 사용해 race condition을 방지한다.
-    - 레코드가 없으면: 생성 → True
-    - 레코드가 있고 cooldown 지남: 덮어쓰기 → True
-    - 레코드가 있고 cooldown 안 지남: 실패 → False
-    """
-    table = dynamodb.Table(_COLLECT_STATUS_TABLE)
+def _try_claim_collect(collect_key: str, now: int) -> bool:
+    """동시 요청이 와도 하나만 수집하도록 선착순으로 잠금을 건다."""
+    table = _dynamodb.Table(_COLLECT_STATUS_TABLE)
     cutoff = now - _COLLECT_COOLDOWN
 
     try:
@@ -184,16 +212,23 @@ def _try_claim_collect(dynamodb, collect_key: str, now: int) -> bool:
             ConditionExpression=(Attr("collectKey").not_exists() | Attr("updatedAt").lt(cutoff)),
         )
         return True
-    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+    except _dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
         return False
     except Exception:
         logger.exception("수집 상태 원자적 기록 실패: %s", collect_key)
         return False
 
 
+def _get_apigw_client(endpoint: str):
+    """endpoint별 API Gateway Management 클라이언트를 캐싱해서 반환한다."""
+    if endpoint not in _apigw_clients:
+        _apigw_clients[endpoint] = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+    return _apigw_clients[endpoint]
+
+
 def _send_to_client(endpoint: str, connection_id: str, data: dict) -> None:
-    """WebSocket API를 통해 클라이언트에 메시지를 전송한다."""
-    apigw = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+    """WebSocket으로 클라이언트에 메시지를 보낸다."""
+    apigw = _get_apigw_client(endpoint)
     try:
         apigw.post_to_connection(
             ConnectionId=connection_id,
@@ -206,11 +241,7 @@ def _send_to_client(endpoint: str, connection_id: str, data: dict) -> None:
 
 
 def _make_collect_key(company: str, position: str, tech_stack: str, keywords: str) -> str:
-    """company + 검색 파라미터로 쿨다운 키를 생성한다.
-
-    같은 기업이라도 키워드 조합이 다르면 별도 수집을 실행하기 위해
-    파라미터를 정규화한 뒤 해시를 붙인다.
-    """
+    """기업명 + 검색 조건을 조합해 중복 수집 방지용 키를 만든다."""
     parts = sorted(filter(None, [position.lower(), tech_stack.lower(), keywords.lower()]))
     params_str = "|".join(parts)
     if not params_str:
@@ -220,9 +251,8 @@ def _make_collect_key(company: str, position: str, tech_stack: str, keywords: st
 
 
 def _increment_request_count(company: str) -> None:
-    """기업별 요청 횟수를 원자적으로 증가시킨다. 프리워밍 판단 데이터로 활용."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_REQUEST_COUNTS_TABLE)
+    """기업별 요청 횟수를 기록한다. 자주 조회되는 기업의 캐시 사전 준비에 활용."""
+    table = _dynamodb.Table(_REQUEST_COUNTS_TABLE)
     try:
         table.update_item(
             Key={"company": company},

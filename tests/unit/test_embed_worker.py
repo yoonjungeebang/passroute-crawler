@@ -6,7 +6,7 @@ SQS 메시지에서 직접 크롤링 데이터를 수신하는 형태의 이벤�
 import json
 from unittest.mock import MagicMock, patch
 
-import app
+from handlers.job_embed import embed_worker
 
 
 def _make_sqs_event(data: dict, message_id: str = "msg-001") -> dict:
@@ -32,15 +32,13 @@ def _raw_json_data(**overrides) -> dict:
 
 
 @patch("core.embedding.embed_text", return_value=[0.1] * 768)
-@patch("handlers.job_embed.boto3.client")
-def test_embed_worker_embeds_and_sends_to_db_load_queue(mock_boto_client, mock_embed):
+@patch("handlers.job_embed._sqs", new_callable=MagicMock)
+def test_embed_worker_embeds_and_sends_to_db_load_queue(mock_sqs, mock_embed):
     """크롤링 데이터를 임베딩 후 DbLoadQueue 로 전송한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
     data = _raw_json_data()
 
     event = _make_sqs_event(data)
-    result = app.embed_worker(event, None)
+    result = embed_worker(event, None)
 
     assert result["statusCode"] == 200
 
@@ -53,15 +51,13 @@ def test_embed_worker_embeds_and_sends_to_db_load_queue(mock_boto_client, mock_e
 
 
 @patch("core.embedding.embed_text", side_effect=RuntimeError("model error"))
-@patch("handlers.job_embed.boto3.client")
-def test_embed_worker_sends_without_embedding_on_failure(mock_boto_client, mock_embed):
+@patch("handlers.job_embed._sqs", new_callable=MagicMock)
+def test_embed_worker_sends_without_embedding_on_failure(mock_sqs, mock_embed):
     """임베딩 실패 시에도 임베딩 없이 DbLoadQueue 로 전송한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
     data = _raw_json_data()
 
     event = _make_sqs_event(data)
-    result = app.embed_worker(event, None)
+    result = embed_worker(event, None)
 
     assert result["statusCode"] == 200
 
@@ -72,16 +68,14 @@ def test_embed_worker_sends_without_embedding_on_failure(mock_boto_client, mock_
     assert sent_body["type"] == "load"
 
 
-@patch("handlers.job_embed.boto3.client")
-def test_embed_worker_reports_failure_in_batch_item_failures(mock_boto_client):
+@patch("handlers.job_embed._sqs", new_callable=MagicMock)
+def test_embed_worker_reports_failure_in_batch_item_failures(mock_sqs):
     """레코드 처리 중 예외 발생 시 batchItemFailures 로 반환한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
     mock_sqs.send_message.side_effect = RuntimeError("SQS 전송 실패")
 
     data = _raw_json_data()
     event = _make_sqs_event(data)
-    result = app.embed_worker(event, None)
+    result = embed_worker(event, None)
 
     assert len(result["batchItemFailures"]) == 1
     assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"

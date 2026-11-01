@@ -120,4 +120,5 @@ def load_api_config() -> dict:
         "webkr_default_display": int(raw["webkr_default_display"]),
         "ws_connection_ttl": int(raw.get("ws_connection_ttl", 3600)),
         "collect_cooldown": int(raw.get("collect_cooldown", 300)),
+        "max_articles_limit": int(raw.get("max_articles_limit", 20)),
     }

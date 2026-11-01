@@ -6,7 +6,7 @@ SQS 메시지에서 직접 데이터를 수신하는 형태의 이벤트를 입�
 import json
 from unittest.mock import MagicMock, patch
 
-import app
+from handlers.job_load import db_loader
 
 
 def _make_sqs_event(data: dict, message_id: str = "msg-001") -> dict:
@@ -44,7 +44,7 @@ def test_db_loader_saves_record(mock_get_pg):
     data = _parsed_json_data()
 
     event = _make_sqs_event(data)
-    app.db_loader(event, None)
+    db_loader(event, None)
 
     mock_pg.save.assert_called_once()
     saved_detail = mock_pg.save.call_args.args[0]
@@ -66,7 +66,7 @@ def test_db_loader_processes_delete_expired(mock_get_pg):
         "requested_at": "20260412T180000",
     }
     event = _make_sqs_event(data)
-    app.db_loader(event, None)
+    db_loader(event, None)
 
     mock_pg.delete_expired.assert_called_once_with(1776164400)
 
@@ -82,7 +82,7 @@ def test_db_loader_reports_failure_in_batch_item_failures(mock_get_pg):
     data = _parsed_json_data()
     event = _make_sqs_event(data)
 
-    result = app.db_loader(event, None)
+    result = db_loader(event, None)
     assert len(result["batchItemFailures"]) == 1
     assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
 
@@ -95,7 +95,7 @@ def test_db_loader_handles_unknown_type(mock_get_pg):
 
     data = {"type": "unknown_type", "data": "something"}
     event = _make_sqs_event(data)
-    result = app.db_loader(event, None)
+    result = db_loader(event, None)
 
     assert result["statusCode"] == 200
     mock_pg.save.assert_not_called()
@@ -112,7 +112,7 @@ def test_db_loader_defaults_to_load_type(mock_get_pg):
     data = _parsed_json_data()
     del data["type"]
     event = _make_sqs_event(data)
-    app.db_loader(event, None)
+    db_loader(event, None)
 
     mock_pg.save.assert_called_once()
 
@@ -130,7 +130,7 @@ def test_db_loader_skips_duplicate(mock_get_pg):
 
     data = _parsed_json_data()
     event = _make_sqs_event(data)
-    app.db_loader(event, None)
+    db_loader(event, None)
 
     mock_pg.save.assert_not_called()
 
@@ -143,7 +143,7 @@ def test_db_loader_saves_when_no_embedding(mock_get_pg):
 
     data = _parsed_json_data(embedding=None, embedding_status="failed")
     event = _make_sqs_event(data)
-    app.db_loader(event, None)
+    db_loader(event, None)
 
     mock_pg.find_duplicate.assert_not_called()
     mock_pg.save.assert_called_once()

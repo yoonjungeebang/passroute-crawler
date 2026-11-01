@@ -1,7 +1,6 @@
 """Lambda 핸들러: Discord 알림 (SNS 트리거 + DLQ 일일 점검 cron)."""
 import json
 import logging
-import os
 
 import boto3
 
@@ -9,6 +8,8 @@ from core.notify import _send_discord
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+_sqs = boto3.client("sqs")
 
 _DLQ_QUEUES = (
     "passroute-job-detail-dlq",
@@ -77,7 +78,7 @@ def discord_notifier(event, _context):
             raise
 
 
-def dlq_daily_check(event, _context):
+def dlq_daily_check(event, context):
     """매일 DLQ 메시지 수를 확인하고, 1건 이상이면 Discord 로 재알림."""
     from core.secrets import get_discord_webhook_url  # noqa: C0415
 
@@ -91,15 +92,16 @@ def dlq_daily_check(event, _context):
         logger.error("DISCORD_WEBHOOK_URL 환경변수 누락")
         return
 
-    sqs = boto3.client("sqs")
-    region = os.environ.get("AWS_REGION", "ap-northeast-2")
-    account_id = boto3.client("sts").get_caller_identity()["Account"]
+    # Lambda context ARN에서 region과 account_id를 추출 (STS API 호출 불필요)
+    arn_parts = context.invoked_function_arn.split(":")
+    region = arn_parts[3]
+    account_id = arn_parts[4]
 
     alerts: list[dict] = []
     for queue_name in _DLQ_QUEUES:
         queue_url = f"https://sqs.{region}.amazonaws.com/{account_id}/{queue_name}"
         try:
-            attrs = sqs.get_queue_attributes(
+            attrs = _sqs.get_queue_attributes(
                 QueueUrl=queue_url,
                 AttributeNames=["ApproximateNumberOfMessages"],
             )["Attributes"]

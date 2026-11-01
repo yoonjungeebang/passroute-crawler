@@ -3,7 +3,7 @@
 # 모델이나 requirements.txt가 변경될 때만 재빌드한다.
 
 # Stage 1: ONNX 임베딩 모델 변환 및 양자화
-FROM python:3.11-slim AS embedding-builder
+FROM python:3.12-slim AS embedding-builder
 
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir "optimum[onnxruntime]" transformers
@@ -26,7 +26,7 @@ t = AutoTokenizer.from_pretrained('snunlp/KR-SBERT-V40K-klueNLI-augSTS'); \
 t.save_pretrained('/tmp/tokenizer/')"
 
 # Stage 2: Lambda 런타임 베이스
-FROM public.ecr.aws/lambda/python:3.11
+FROM public.ecr.aws/lambda/python:3.12
 
 # 임베딩 모델 복사
 COPY --from=embedding-builder /tmp/kr-sbert-uint8.onnx /app/models/kr-sbert-uint8.onnx

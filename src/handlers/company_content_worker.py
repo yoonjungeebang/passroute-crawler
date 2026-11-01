@@ -1,7 +1,6 @@
 """기업별 수집 워커. SQS 트리거로 뉴스/블로그를 수집하고 WebSocket으로 결과를 푸시한다."""
 import json
 import logging
-import os
 import time
 from datetime import datetime
 
@@ -12,7 +11,7 @@ from core import KST
 from crawler.base import JobDetail
 from core.normalize import make_external_id
 
-from ._common import _API_CONFIG, get_pg_storage
+from ._common import _API_CONFIG, get_pg_storage, required_env
 
 
 def safe_int(value: str, *, default: int, min_val: int = 1, max_val: int = 100) -> int:
@@ -26,8 +25,12 @@ def safe_int(value: str, *, default: int, min_val: int = 1, max_val: int = 100) 
 
 logger = logging.getLogger(__name__)
 
-_COLLECT_STATUS_TABLE = os.environ.get("COLLECT_STATUS_TABLE", "passroute-collect-status")
-_CONNECTIONS_TABLE = os.environ.get("WS_CONNECTIONS_TABLE", "passroute-ws-connections")
+_COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
+_CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
+
+# Lambda 웜 스타트 시 커넥션 재사용을 위한 모듈 레벨 클라이언트
+_dynamodb = boto3.resource("dynamodb")
+_apigw_clients: dict[str, object] = {}
 
 
 def company_collect_worker(event, context):
@@ -267,8 +270,7 @@ def _collect_company_data(
 
 def _update_collect_status(collect_key: str, status: str) -> None:
     """수집 상태를 DynamoDB에 업데이트한다."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_COLLECT_STATUS_TABLE)
+    table = _dynamodb.Table(_COLLECT_STATUS_TABLE)
     now = int(time.time())
     cooldown = int(_API_CONFIG.get("collect_cooldown", 300))
     try:
@@ -316,8 +318,7 @@ def _get_cached_data(company: str) -> dict | None:
 
 def _push_to_all_connections(company: str, result: dict, *, status: str = "done") -> None:
     """해당 company를 요청한 모든 WebSocket 연결에 결과를 푸시한다."""
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(_CONNECTIONS_TABLE)
+    table = _dynamodb.Table(_CONNECTIONS_TABLE)
 
     # company GSI로 해당 기업의 모든 연결 조회
     try:
@@ -352,7 +353,9 @@ def _push_to_all_connections(company: str, result: dict, *, status: str = "done"
         if not endpoint:
             continue
 
-        apigw = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+        if endpoint not in _apigw_clients:
+            _apigw_clients[endpoint] = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
+        apigw = _apigw_clients[endpoint]
         try:
             apigw.post_to_connection(ConnectionId=connection_id, Data=payload)
             pushed += 1

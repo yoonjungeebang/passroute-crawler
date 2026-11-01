@@ -7,6 +7,8 @@ from ._common import required_env
 
 logger = logging.getLogger(__name__)
 
+_sqs = boto3.client("sqs")
+
 
 def embed_worker(event, context):
     """SQS 트리거. 크롤링 데이터 수신 → 임베딩 → DbLoadQueue 로 전송.
@@ -22,7 +24,6 @@ def embed_worker(event, context):
     embed_count = 0
     embed_fail_count = 0
     failures: list[dict] = []
-    sqs = boto3.client("sqs")
     db_load_queue_url = required_env("DB_LOAD_QUEUE_URL")
 
     for record in event["Records"]:
@@ -59,7 +60,7 @@ def embed_worker(event, context):
 
             data["embedding_status"] = "failed" if embedding_failed else "ok"
             data["type"] = "load"
-            sqs.send_message(
+            _sqs.send_message(
                 QueueUrl=db_load_queue_url,
                 MessageBody=json.dumps(data, ensure_ascii=False),
             )

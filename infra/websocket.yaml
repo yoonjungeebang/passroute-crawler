@@ -84,7 +84,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.ws_connect
+      Handler: handlers.websocket.ws_connect
       Timeout: 10
       MemorySize: 128
 
@@ -93,7 +93,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.ws_disconnect
+      Handler: handlers.websocket.ws_disconnect
       Timeout: 10
       MemorySize: 128
       Environment:
@@ -108,7 +108,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.ws_collect
+      Handler: handlers.websocket.ws_collect
       Timeout: 10
       MemorySize: 128
       Environment:
@@ -134,7 +134,7 @@ Resources:
     Properties:
       Runtime: python3.12
       CodeUri: ../src/
-      Handler: app.ws_authorizer
+      Handler: handlers.websocket.ws_authorizer
       Timeout: 5
       MemorySize: 128
       Environment:

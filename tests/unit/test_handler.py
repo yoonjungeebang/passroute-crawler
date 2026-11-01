@@ -7,8 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import app
 from crawler.base import JobDetail, JobListingRef
+from handlers.job_cleanup import delete_expired_jobs
+from handlers.job_dispatch import job_list_collector
+from handlers.job_list import source_collect_worker
+from handlers.job_detail import job_crawl
 
 
 # ─────────────────────────────────────────────────────────
@@ -60,26 +63,20 @@ def _detail(**overrides) -> JobDetail:
 
 
 @patch("handlers.job_dispatch.iter_sources", return_value=iter(["jumpit", "programmers"]))
-@patch("handlers.job_dispatch.boto3.client")
-def test_job_list_collector_dispatches_sources(mock_boto_client, mock_iter):
+@patch("handlers.job_dispatch._sqs", new_callable=MagicMock)
+def test_job_list_collector_dispatches_sources(mock_sqs, mock_iter):
     """소스별로 SourceCollectQueue 에 메시지를 전송한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
-    result = app.job_list_collector({}, None)
+    result = job_list_collector({}, None)
 
     body = json.loads(result["body"])
     assert body["dispatched_sources"] == ["jumpit", "programmers"]
     assert mock_sqs.send_message.call_count == 2
 
 
-@patch("handlers.job_cleanup.boto3.client")
-def test_delete_expired_jobs_sends_message(mock_boto_client):
+@patch("handlers.job_cleanup._sqs", new_callable=MagicMock)
+def test_delete_expired_jobs_sends_message(mock_sqs):
     """만료 삭제 메시지가 DbLoadQueue 로 전송되어야 한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
-    result = app.delete_expired_jobs({}, None)
+    result = delete_expired_jobs({}, None)
 
     mock_sqs.send_message.assert_called_once()
     msg = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
@@ -88,16 +85,15 @@ def test_delete_expired_jobs_sends_message(mock_boto_client):
     assert result["statusCode"] == 200
 
 
-@patch("handlers.job_dispatch.boto3.client")
+@patch("handlers.job_dispatch._sqs", new_callable=MagicMock)
 def test_job_list_collector_fails_fast_when_queue_url_missing(
-    mock_boto_client, monkeypatch,
+    mock_sqs, monkeypatch,
 ):
     """필수 환경변수 SOURCE_COLLECT_QUEUE_URL 이 없으면 RuntimeError."""
-    mock_boto_client.return_value = MagicMock()
     monkeypatch.delenv("SOURCE_COLLECT_QUEUE_URL", raising=False)
 
     with pytest.raises(RuntimeError, match="SOURCE_COLLECT_QUEUE_URL"):
-        app.job_list_collector({}, None)
+        job_list_collector({}, None)
 
 
 # ─────────────────────────────────────────────────────────
@@ -106,16 +102,13 @@ def test_job_list_collector_fails_fast_when_queue_url_missing(
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list._sqs", new_callable=MagicMock)
 @patch("handlers.job_list.get_pg_storage")
 @patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_dispatches_new_listings(
-    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_sqs, mock_robots_cls,
 ):
     """신규 공고만 JobDetailQueue 로 전송되어야 한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
     mock_pg = MagicMock()
     mock_pg.get_existing_urls.return_value = {
         "https://www.jumpit.co.kr/position/111",
@@ -136,23 +129,20 @@ def test_source_collect_worker_dispatches_new_listings(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["333"]
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list._sqs", new_callable=MagicMock)
 @patch("handlers.job_list.get_pg_storage")
 @patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_skips_title_duplicates(
-    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_sqs, mock_robots_cls,
 ):
     """다른 source 에 동일 회사+제목 공고가 있으면 크롤링 전에 제외한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
     mock_pg = MagicMock()
     mock_pg.get_existing_urls.return_value = set()
     mock_pg.get_existing_company_titles.return_value = {
@@ -173,21 +163,20 @@ def test_source_collect_worker_skips_title_duplicates(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     sent = _collect_sent_messages(mock_sqs)
     assert [m["external_id"] for m in sent] == ["222"]
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list._sqs", new_callable=MagicMock)
 @patch("handlers.job_list.get_pg_storage")
 @patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_skips_blocked_source(
-    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_sqs, mock_robots_cls,
 ):
     """robots.txt 차단 시 해당 소스를 스킵한다."""
-    mock_boto_client.return_value = MagicMock()
     mock_pg = MagicMock()
     mock_pg.get_existing_urls.return_value = set()
     mock_get_pg.return_value = mock_pg
@@ -201,20 +190,19 @@ def test_source_collect_worker_skips_blocked_source(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "blocked_site"})
-    app.source_collect_worker(event, None)
+    source_collect_worker(event, None)
 
     mock_crawler.collect_listings.assert_not_called()
 
 
 @patch("crawler.robots_check.RobotsChecker", autospec=True)
-@patch("handlers.job_list.boto3.client")
+@patch("handlers.job_list._sqs", new_callable=MagicMock)
 @patch("handlers.job_list.get_pg_storage")
 @patch("handlers.job_list.get_crawler")
 def test_source_collect_worker_partial_failure(
-    mock_get_crawler, mock_get_pg, mock_boto_client, mock_robots_cls,
+    mock_get_crawler, mock_get_pg, mock_sqs, mock_robots_cls,
 ):
     """크롤링 실패 시 batchItemFailures로 해당 메시지만 재시도."""
-    mock_boto_client.return_value = MagicMock()
     mock_pg = MagicMock()
     mock_pg.get_existing_urls.return_value = set()
     mock_get_pg.return_value = mock_pg
@@ -229,7 +217,7 @@ def test_source_collect_worker_partial_failure(
     mock_get_crawler.return_value = mock_crawler
 
     event = _make_sqs_event({"source": "jumpit"})
-    result = app.source_collect_worker(event, None)
+    result = source_collect_worker(event, None)
     assert result["batchItemFailures"] == [{"itemIdentifier": "test-msg-001"}]
 
 
@@ -239,13 +227,10 @@ def test_source_collect_worker_partial_failure(
 
 
 @patch("handlers.job_detail.time.sleep")
-@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail._sqs", new_callable=MagicMock)
 @patch("handlers.job_detail.get_crawler")
-def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock_sleep):
+def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_sqs, mock_sleep):
     """상세 크롤링 성공 시 SQS EmbedQueue 로 메시지가 전송되어야 한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.return_value = _detail()
     mock_get_crawler.return_value = mock_crawler
@@ -257,7 +242,7 @@ def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock
         "company_name": "패스루트",
         "title": "백엔드 채용",
     })
-    app.job_crawl(event, None)
+    job_crawl(event, None)
 
     mock_sqs.send_message.assert_called_once()
     sent_body = json.loads(mock_sqs.send_message.call_args.kwargs["MessageBody"])
@@ -268,15 +253,12 @@ def test_job_crawl_sends_to_embed_queue(mock_get_crawler, mock_boto_client, mock
 
 
 @patch("handlers.job_detail.time.sleep")
-@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail._sqs", new_callable=MagicMock)
 @patch("handlers.job_detail.get_crawler")
 def test_job_crawl_skips_when_fetch_returns_none(
-    mock_get_crawler, mock_boto_client, mock_sleep,
+    mock_get_crawler, mock_sqs, mock_sleep,
 ):
     """fetch_detail 이 None 을 반환하면 전송하지 않고 스킵한다."""
-    mock_sqs = MagicMock()
-    mock_boto_client.return_value = mock_sqs
-
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.return_value = None
     mock_get_crawler.return_value = mock_crawler
@@ -288,20 +270,18 @@ def test_job_crawl_skips_when_fetch_returns_none(
         "company_name": "A",
         "title": "t",
     })
-    app.job_crawl(event, None)
+    job_crawl(event, None)
 
     mock_sqs.send_message.assert_not_called()
 
 
 @patch("handlers.job_detail.time.sleep")
-@patch("handlers.job_detail.boto3.client")
+@patch("handlers.job_detail._sqs", new_callable=MagicMock)
 @patch("handlers.job_detail.get_crawler")
 def test_job_crawl_reports_failure_in_batch_item_failures(
-    mock_get_crawler, mock_boto_client, mock_sleep,
+    mock_get_crawler, mock_sqs, mock_sleep,
 ):
     """크롤링 예외 발생 시 batchItemFailures로 실패 레코드를 반환한다."""
-    mock_boto_client.return_value = MagicMock()
-
     mock_crawler = MagicMock()
     mock_crawler.fetch_detail.side_effect = RuntimeError("boom")
     mock_get_crawler.return_value = mock_crawler
@@ -314,6 +294,6 @@ def test_job_crawl_reports_failure_in_batch_item_failures(
         "title": "t",
     })
 
-    result = app.job_crawl(event, None)
+    result = job_crawl(event, None)
     assert len(result["batchItemFailures"]) == 1
     assert result["batchItemFailures"][0]["itemIdentifier"] == "test-msg-001"
