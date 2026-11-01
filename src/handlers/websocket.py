@@ -12,18 +12,34 @@ from ._common import _API_CONFIG, required_env
 
 logger = logging.getLogger(__name__)
 
-_CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
-_COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
-_REQUEST_COUNTS_TABLE = required_env("COMPANY_REQUEST_COUNTS_TABLE")
-_QUEUE_URL = required_env("COMPANY_COLLECT_QUEUE_URL")
 _WS_CONNECTION_TTL = int(_API_CONFIG.get("ws_connection_ttl", 3600))
 _COLLECT_COOLDOWN = int(_API_CONFIG.get("collect_cooldown", 300))
 _MAX_ARTICLES_LIMIT = int(_API_CONFIG.get("max_articles_limit", 20))
 
 # Lambda 웜 스타트 시 커넥션 재사용을 위한 모듈 레벨 클라이언트
 _dynamodb = boto3.resource("dynamodb")
-_sqs = boto3.client("sqs")
 _apigw_clients: dict[str, object] = {}
+
+# ws_disconnect / ws_collect 에서 사용하는 환경변수와 SQS 클라이언트.
+# ws_authorizer / ws_connect Lambda는 이 값이 필요 없으므로
+# 모듈 import 시점이 아닌 첫 호출 시점에 초기화한다.
+_CONNECTIONS_TABLE: str | None = None
+_COLLECT_STATUS_TABLE: str | None = None
+_REQUEST_COUNTS_TABLE: str | None = None
+_QUEUE_URL: str | None = None
+_sqs = None
+
+
+def _ensure_collect_env():
+    """ws_collect 계열 함수가 필요로 하는 환경변수와 SQS 클라이언트를 초기화한다."""
+    global _CONNECTIONS_TABLE, _COLLECT_STATUS_TABLE, _REQUEST_COUNTS_TABLE, _QUEUE_URL, _sqs
+    if _CONNECTIONS_TABLE is not None:
+        return
+    _CONNECTIONS_TABLE = required_env("WS_CONNECTIONS_TABLE")
+    _COLLECT_STATUS_TABLE = required_env("COLLECT_STATUS_TABLE")
+    _REQUEST_COUNTS_TABLE = required_env("COMPANY_REQUEST_COUNTS_TABLE")
+    _QUEUE_URL = required_env("COMPANY_COLLECT_QUEUE_URL")
+    _sqs = boto3.client("sqs")
 
 
 def ws_authorizer(event, context):
@@ -92,6 +108,7 @@ def ws_connect(event, context):
 
 def ws_disconnect(event, context):
     """연결이 끊어지면 DynamoDB에서 해당 연결 정보를 삭제한다."""
+    _ensure_collect_env()
     connection_id = event["requestContext"]["connectionId"]
     table = _dynamodb.Table(_CONNECTIONS_TABLE)
 
@@ -106,6 +123,7 @@ def ws_disconnect(event, context):
 
 def ws_collect(event, context):
     """수집 요청을 받아 중복 확인 후 SQS에 작업을 넣고 클라이언트에 응답한다."""
+    _ensure_collect_env()
     connection_id = event["requestContext"]["connectionId"]
     domain = event["requestContext"]["domainName"]
     stage = event["requestContext"]["stage"]
