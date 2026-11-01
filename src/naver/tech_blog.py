@@ -5,6 +5,7 @@
 """
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import feedparser
 import requests
@@ -25,6 +26,7 @@ class BlogFeed:
     feed_url: str
 
 
+
 # ── 설정 파일에서 로드 ──
 
 _BLOG_CONFIG = load_tech_blog_config()
@@ -40,7 +42,6 @@ def _build_domain_to_feed_map() -> dict[str, str]:
     """도메인 → RSS 피드 URL 매핑을 생성한다."""
     mapping: dict[str, str] = {}
     for feed in _DEFAULT_FEEDS:
-        from urllib.parse import urlparse  # noqa: C0415
         domain = urlparse(feed.feed_url).netloc
         # medium.com은 여러 기업이 같은 도메인을 사용하므로 피드 URL 자체를 키로 사용
         if domain == "medium.com":
@@ -55,7 +56,6 @@ _DOMAIN_TO_FEED: dict[str, str] = _build_domain_to_feed_map()
 
 def find_rss_feed_url(article_url: str) -> str | None:
     """글 URL의 도메인으로 RSS 피드 URL을 찾는다. 없으면 None."""
-    from urllib.parse import urlparse  # noqa: C0415
     domain = urlparse(article_url).netloc
 
     if domain in _DOMAIN_TO_FEED:
