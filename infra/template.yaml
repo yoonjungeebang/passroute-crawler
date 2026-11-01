@@ -203,7 +203,7 @@ Resources:
           DB_LOAD_QUEUE_URL: !GetAtt MessagingStack.Outputs.DbLoadQueueUrl
       ImageConfig:
         Command:
-          - app.embed_worker
+          - handlers.job_embed.embed_worker
       Policies:
         - SQSSendMessagePolicy:
             QueueName: !GetAtt MessagingStack.Outputs.DbLoadQueueName
